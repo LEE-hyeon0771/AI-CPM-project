@@ -25,6 +25,23 @@ class Settings:
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
         self.use_openai_embeddings = os.getenv("USE_OPENAI_EMBEDDINGS", "false").lower() == "true"
         
+        # LLM configuration (Global defaults)
+        self.llm_model = os.getenv("LLM_MODEL", "gpt-4o-mini")  # gpt-4o-mini, gpt-4, gpt-3.5-turbo
+        self.llm_temperature = float(os.getenv("LLM_TEMPERATURE", "0.7"))
+        self.llm_max_tokens = int(os.getenv("LLM_MAX_TOKENS", "2000"))
+        
+        # Agent-specific LLM models (optional overrides)
+        self.supervisor_model = os.getenv("SUPERVISOR_MODEL", self.llm_model)
+        self.law_rag_model = os.getenv("LAW_RAG_MODEL", self.llm_model)
+        self.cpm_model = os.getenv("CPM_MODEL", self.llm_model)
+        self.merger_model = os.getenv("MERGER_MODEL", self.llm_model)
+        
+        # Agent-specific temperatures (optional overrides)
+        self.supervisor_temperature = float(os.getenv("SUPERVISOR_TEMPERATURE", str(self.llm_temperature)))
+        self.law_rag_temperature = float(os.getenv("LAW_RAG_TEMPERATURE", str(self.llm_temperature)))
+        self.cpm_temperature = float(os.getenv("CPM_TEMPERATURE", str(self.llm_temperature)))
+        self.merger_temperature = float(os.getenv("MERGER_TEMPERATURE", str(self.llm_temperature)))
+        
         # Contract defaults
         self.currency = os.getenv("CURRENCY", "KRW")
         

@@ -4,14 +4,15 @@ AI-powered multi-agent system for construction project management with intellige
 
 ## Features
 
-- **Multi-Agent Architecture**: Law RAG, Threshold Builder, CPM+Weather+Cost, and Merger agents
-- **FAISS-based RAG**: Read-only vector search for construction safety regulations
-- **CPM Analysis**: Critical Path Method with weather and holiday considerations
-- **Cost Analysis**: Automatic calculation of delay costs and liquidated damages
-- **Natural Language WBS**: Parse work breakdown structures from natural language
-- **Real-time Weather Integration**: Weather impact analysis for construction delays
-- **Prompt Management System**: Centralized prompt files for easy customization and maintenance
-- **Modern Web UI**: React + Vite + Tailwind CSS frontend
+- **🤖 LLM-Powered Multi-Agent System**: GPT-4/3.5 integrated into all agents for intelligent reasoning
+- **🧠 Intelligent Intent Routing**: LLM-based supervisor understands natural language queries
+- **📚 Smart RAG System**: FAISS vector search + LLM interpretation for construction regulations
+- **📊 AI-Enhanced CPM Analysis**: LLM understands weather data and generates optimized schedules
+- **💰 Intelligent Cost Analysis**: Automatic calculation with AI-driven recommendations
+- **🌤️ Weather-Aware Scheduling**: Real-time weather integration with LLM-based impact analysis
+- **📝 Natural Language Responses**: LLM generates clear, actionable insights in Korean
+- **🎯 Prompt Management System**: Centralized prompt files for easy customization
+- **🖥️ Modern Web UI**: React + Vite + Tailwind CSS frontend
 
 ## Architecture
 
@@ -179,6 +180,17 @@ D: 철골 설치, 4일, 선행 B(FS), C(FS), 유형 STEEL
 ### Environment Variables
 
 ```bash
+# OpenAI Configuration (Required for LLM features)
+OPENAI_API_KEY=your_openai_api_key_here
+
+# LLM Model Settings
+LLM_MODEL=gpt-4o-mini  # Options: gpt-4o-mini, gpt-4, gpt-3.5-turbo
+LLM_TEMPERATURE=0.7
+LLM_MAX_TOKENS=2000
+
+# Embeddings (Optional - for FAISS)
+USE_OPENAI_EMBEDDINGS=false
+
 # FAISS Configuration
 FAISS_INDEX_PATH=./data/faiss/index.faiss
 FAISS_META_PATH=./data/faiss/meta.jsonl
@@ -190,16 +202,22 @@ KMA_API_KEY=
 HOLIDAY_ENDPOINT=<HOLIDAY_ENDPOINT>
 HOLIDAY_API_KEY=
 
-# OpenAI (optional)
-OPENAI_API_KEY=
-USE_OPENAI_EMBEDDINGS=false
-
 # Development
 USE_STUB=true
 CURRENCY=KRW
 ```
 
+**⚠️ Important**: You need an OpenAI API key for LLM features. Get one at https://platform.openai.com/api-keys
+
+If no API key is provided:
+- Supervisor falls back to regex-based routing
+- Law RAG returns raw FAISS results without interpretation
+- CPM Agent uses rule-based recommendations
+- Merger skips natural language summary
+
 ## Testing
+
+### 자동화된 테스트
 
 Run the test suite:
 
@@ -211,6 +229,87 @@ pytest tests/
 pytest tests/test_faiss_store.py
 pytest tests/test_wbs_parser.py
 pytest tests/test_agents.py
+```
+
+### API 테스트 도구들
+
+서버가 실행 중일 때 다양한 방법으로 API를 테스트할 수 있습니다:
+
+#### 1. **FastAPI 자동 문서 (가장 추천!)**
+
+서버 실행 후 브라우저에서 접속:
+```
+http://localhost:8000/docs        # Swagger UI (대화형 API 문서)
+http://localhost:8000/redoc       # ReDoc (API 레퍼런스)
+```
+
+#### 2. **웹 테스트 대시보드**
+
+간단한 HTML 대시보드로 테스트:
+```bash
+# test_dashboard.html 파일을 브라우저에서 열기
+# 또는 간단한 서버로 실행:
+python -m http.server 3001
+# 그 후 http://localhost:3001/test_dashboard.html 접속
+```
+
+기능:
+- ✅ 서버 상태 실시간 확인
+- ✅ 프롬프트 조회 및 확인
+- ✅ 채팅 테스트 (WBS 포함)
+- ✅ 에이전트 상태 모니터링
+- ✅ 예제 질문 템플릿 제공
+
+#### 3. **Python 테스트 스크립트**
+
+자동화된 API 테스트:
+```bash
+# 서버가 실행 중인 상태에서
+python test_api_client.py
+```
+
+모든 엔드포인트를 순차적으로 테스트하고 결과를 출력합니다.
+
+#### 4. **HTTP 파일 (VSCode REST Client)**
+
+VSCode의 REST Client 확장 사용:
+```bash
+# test_api_examples.http 파일을 VSCode에서 열고
+# "Send Request" 클릭
+```
+
+#### 5. **Curl 명령어**
+
+터미널에서 직접 테스트:
+```bash
+# 프롬프트 목록 확인
+curl http://localhost:8000/api/prompts
+
+# 특정 프롬프트 확인
+curl http://localhost:8000/api/prompts/law_rag_system
+
+# 에이전트 상태 확인
+curl http://localhost:8000/api/agents/status
+
+# 채팅 테스트
+curl -X POST "http://localhost:8000/api/chat" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "타워크레인 작업 시 풍속 기준은?"}'
+```
+
+### 프롬프트 디버깅
+
+시스템이 어떤 프롬프트를 사용하는지 확인하려면:
+
+```bash
+# 1. 모든 프롬프트 목록
+curl http://localhost:8000/api/prompts
+
+# 2. 특정 에이전트의 시스템 프롬프트 확인
+curl http://localhost:8000/api/agents/status
+
+# 3. 프롬프트 파일 직접 확인
+cat prompts/law_rag_system.txt
 ```
 
 ## Project Structure
@@ -271,25 +370,30 @@ project/
 
 ## Agents Overview
 
-### 1. Law RAG Agent
-- Searches construction safety regulations using FAISS
-- Provides citations with document references
-- Fallback mode when FAISS unavailable
+### 1. Supervisor (Intent Router)
+- **LLM Mode**: GPT analyzes user intent in natural language → routes to appropriate agents
+- **Fallback**: Regex pattern matching if LLM unavailable
+- **Capability**: Understands complex queries and multi-intent requests
 
-### 2. Threshold Builder Agent
-- Extracts numeric rules from RAG snippets
-- Uses regex patterns for value extraction
-- Stores rules in JSONL format
+### 2. Law RAG Agent
+- **LLM Mode**: FAISS search → GPT interprets and summarizes regulations for the query
+- **Fallback**: Raw FAISS search results
+- **Capability**: Contextual understanding and relevance filtering
 
-### 3. CPM Weather Cost Agent
-- Performs CPM analysis with weather considerations
-- Calculates delay impacts and costs
-- Generates recommendations
+### 3. Threshold Builder Agent
+- **Current**: Regex-based numeric extraction (no LLM needed)
+- **Capability**: Extracts safety thresholds from regulations
+- **Output**: Structured rules (wind speed, temperature, etc.)
 
-### 4. Merger Agent
-- Unifies outputs from all agents
-- Formats data for UI display
-- Creates tables and cards
+### 4. CPM Weather Cost Agent
+- **LLM Mode**: Analyzes weather data → GPT generates intelligent schedule adjustments + actionable recommendations
+- **Fallback**: Rule-based recommendations
+- **Capability**: Understands weather impact context and suggests mitigation strategies
+
+### 5. Merger Agent
+- **LLM Mode**: GPT generates natural language summary of all analysis results
+- **Fallback**: Structured data only
+- **Capability**: Creates executive summary for project managers
 
 ## Prompt Management System
 
@@ -316,13 +420,31 @@ The system uses a centralized prompt management system for better maintainabilit
 
 ## Development Notes
 
-- **No Hard-coding**: All configuration through `.env` and `config.py`
-- **Stub Mode**: Default mode uses stub data for external APIs
-- **Read-only FAISS**: No embedding generation, only search
-- **Modular Design**: Each agent is independently testable
-- **Error Handling**: Graceful fallbacks when services unavailable
-- **Prompt-driven**: All agent behavior controlled by external prompt files
-- **Clean Architecture**: Clear separation between agents (business logic) and tools (utilities)
+- **🤖 LLM Integration**: OpenAI GPT-4/3.5 integrated across all agents
+- **🔄 Graceful Fallbacks**: System works without LLM (reduced functionality)
+- **⚙️ No Hard-coding**: All configuration through `.env` and `config.py`
+- **🔌 Stub Mode**: Default mode uses stub data for external APIs
+- **📖 Read-only FAISS**: No embedding generation, only search
+- **🧩 Modular Design**: Each agent is independently testable
+- **🛡️ Error Handling**: Graceful fallbacks when services unavailable
+- **📝 Prompt-driven**: All agent behavior controlled by external prompt files
+- **🏗️ Clean Architecture**: Clear separation between agents (business logic) and tools (utilities)
+
+### LLM Integration Details
+
+**When LLM is available (OpenAI API key set):**
+1. **Supervisor**: Natural language understanding for intent routing
+2. **Law RAG**: Contextual interpretation of regulations
+3. **CPM Agent**: Intelligent weather impact analysis and recommendations
+4. **Merger**: Executive summary generation in natural language
+
+**When LLM is unavailable (no API key):**
+1. **Supervisor**: Regex-based pattern matching
+2. **Law RAG**: Raw FAISS search results
+3. **CPM Agent**: Rule-based recommendations
+4. **Merger**: Structured data only (no summary)
+
+**All core functionality (CPM calculation, cost analysis, data processing) works independently of LLM.**
 
 ## Troubleshooting
 

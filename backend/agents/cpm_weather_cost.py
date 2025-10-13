@@ -1,8 +1,9 @@
 """
-CPM + Weather + Cost Agent for comprehensive project analysis.
+CPM + Weather + Cost Agent for comprehensive project analysis with LLM-based reasoning.
 """
 from typing import List, Dict, Any, Optional
 from datetime import date, timedelta
+import json
 from ..schemas.io import WBSItem, DelayRow, CostSummary
 from ..tools.services.cpm import CPMService
 from ..tools.services.weather import WeatherService
@@ -10,6 +11,7 @@ from ..tools.services.holidays import HolidayService
 from ..tools.services.cost import CostService
 from ..tools.rules.store import RulesStore
 from ..config import get_settings
+from ..utils.llm_client import get_llm_client
 
 
 class CPMWeatherCostAgent:
@@ -22,6 +24,7 @@ class CPMWeatherCostAgent:
         self.cost_service = CostService()
         self.rules_store = RulesStore()
         self.settings = get_settings()
+        self.llm = get_llm_client()
     
     def analyze(self, wbs_json: List[WBSItem], contract_data: Dict[str, Any], rules: List[Any] = None) -> Dict[str, Any]:
         """
@@ -93,7 +96,7 @@ class CPMWeatherCostAgent:
         
         # Calculate total delays
         weather_delays = weather_impact["unsuitable_days"]
-        holiday_delays = holiday_impact["non_working_days"] - holiday_impact["holidays"]
+        holiday_delays = holiday_impact["non_working_days"] - holiday_impact["holiday_count"]
         
         total_delays = weather_delays + holiday_delays
         
@@ -163,7 +166,74 @@ class CPMWeatherCostAgent:
         }
     
     def _generate_recommendations(self, delay_analysis: Dict[str, Any], cost_analysis: Dict[str, Any]) -> List[str]:
-        """Generate recommendations based on analysis."""
+        """Generate recommendations based on analysis with LLM reasoning."""
+        # Try LLM-based recommendations first
+        if self.llm.is_available():
+            return self._llm_generate_recommendations(delay_analysis, cost_analysis)
+        
+        # Fallback to rule-based recommendations
+        return self._rule_based_recommendations(delay_analysis, cost_analysis)
+    
+    def _llm_generate_recommendations(self, delay_analysis: Dict[str, Any], cost_analysis: Dict[str, Any]) -> List[str]:
+        """Use LLM to generate intelligent recommendations."""
+        try:
+            delay_days = delay_analysis.get("total_delay_days", 0)
+            weather_delays = delay_analysis.get("weather_delays", 0)
+            holiday_delays = delay_analysis.get("holiday_delays", 0)
+            total_cost = cost_analysis.get("total", 0)
+            indirect_cost = cost_analysis.get("indirect_cost", 0)
+            ld_cost = cost_analysis.get("ld", 0)
+            
+            # Get weather forecast details
+            weather_forecast = delay_analysis.get("weather_forecast", {})
+            delay_rows = delay_analysis.get("delay_rows", [])
+            
+            # Prepare context for LLM
+            context = f"""프로젝트 분석 결과:
+- 총 지연일: {delay_days}일
+  - 기상 지연: {weather_delays}일
+  - 공휴일 지연: {holiday_delays}일
+- 추가 비용: {total_cost:,.0f}원
+  - 간접비: {indirect_cost:,.0f}원
+  - 지연손해금: {ld_cost:,.0f}원
+
+주요 지연 사유:"""
+            
+            for row in delay_rows[:5]:  # Top 5 delays
+                if hasattr(row, 'date'):
+                    context += f"\n- {row.date}: {row.reason}"
+                else:
+                    context += f"\n- {row.get('date', 'N/A')}: {row.get('reason', 'N/A')}"
+            
+            prompt = f"""{context}
+
+위 분석 결과를 바탕으로 프로젝트 관리자에게 다음을 제공하세요:
+1. 핵심 리스크 요약 (1-2줄)
+2. 구체적인 대응 방안 3-5가지
+3. 비용 절감 또는 일정 단축 아이디어
+
+명확하고 실행 가능한 권장사항을 제시하세요."""
+
+            response = self.llm.chat_completion(
+                messages=[
+                    {"role": "system", "content": "당신은 건설 프로젝트 관리 전문가입니다. 데이터를 분석하고 실용적인 권장사항을 제공합니다."},
+                    {"role": "user", "content": prompt}
+                ],
+                model=self.settings.cpm_model,
+                temperature=self.settings.cpm_temperature
+            )
+            
+            # Parse response into list of recommendations
+            recommendations = [line.strip() for line in response.split("\n") if line.strip()]
+            
+            return recommendations if recommendations else self._rule_based_recommendations(delay_analysis, cost_analysis)
+            
+        except Exception as e:
+            print(f"LLM recommendation error: {e}")
+            return self._rule_based_recommendations(delay_analysis, cost_analysis)
+    
+    def _rule_based_recommendations(self, delay_analysis: Dict[str, Any], cost_analysis: Dict[str, Any]) -> List[str]:
+        """Fallback rule-based recommendations."""
         recommendations = []
         
         delay_days = delay_analysis.get("total_delay_days", 0)

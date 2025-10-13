@@ -1,10 +1,12 @@
 """
-Merger Agent for unifying outputs and formatting for UI.
+Merger Agent for unifying outputs and formatting for UI with LLM-based natural language generation.
 """
 from typing import List, Dict, Any, Optional
+import json
 from ..schemas.io import ChatResponse, UITable, UICard, UIResponse, Citation, CostSummary
 from ..config import get_settings, format_currency
 from ..utils.prompt_loader import get_system_prompt, get_query_prompt
+from ..utils.llm_client import get_llm_client
 
 
 class MergerAgent:
@@ -12,34 +14,19 @@ class MergerAgent:
     
     def __init__(self):
         self.settings = get_settings()
+        self.llm = get_llm_client()
     
     def merge_results(self, results: Dict[str, Any], contract_data: Dict[str, Any]) -> ChatResponse:
         """
-        Merge results from all agents into unified response.
+        Merge results from all agents into unified response with LLM-enhanced explanations.
         
         Args:
             results: Results from various agents
             contract_data: Contract information
             
         Returns:
-            Unified chat response
+            Unified chat response with natural language explanations
         """
-        # Use prompt-based formatting guidance
-        try:
-            formatting_prompt = get_query_prompt(
-                "merger_formatting",
-                ideal_schedule=results.get("cpm_weather_cost", {}).get("ideal_schedule", {}),
-                delay_analysis=results.get("cpm_weather_cost", {}).get("delay_analysis", {}),
-                cost_analysis=results.get("cpm_weather_cost", {}).get("cost_analysis", {}),
-                safety_rules=results.get("threshold_builder", []),
-                citations=results.get("law_rag", [])
-            )
-            # For now, we'll use the existing formatting logic
-            # In a full LLM implementation, this would be used to guide the LLM
-        except:
-            # Fallback to existing method if prompt not available
-            pass
-        
         # Extract results from different agents
         law_rag_results = results.get("law_rag", [])
         threshold_results = results.get("threshold_builder", [])
@@ -59,10 +46,16 @@ class MergerAgent:
         # Build cost summary
         cost_summary = self._build_cost_summary(cost_analysis)
         
-        # Build UI components
+        # Build UI components (with LLM enhancement if available)
         ui_response = self._build_ui_components(
             ideal_schedule, delay_analysis, cost_analysis, threshold_results
         )
+        
+        # Add LLM-generated natural language summary if available
+        if self.llm.is_available():
+            ui_response = self._enhance_with_llm_summary(
+                ui_response, ideal_schedule, delay_analysis, cost_analysis, citations
+            )
         
         return ChatResponse(
             ideal_schedule=ideal_schedule,
@@ -71,6 +64,66 @@ class MergerAgent:
             citations=citations,
             ui=ui_response
         )
+    
+    def _enhance_with_llm_summary(
+        self, 
+        ui_response: UIResponse,
+        ideal_schedule: Dict[str, Any],
+        delay_analysis: Dict[str, Any],
+        cost_analysis: Dict[str, Any],
+        citations: List[Citation]
+    ) -> UIResponse:
+        """Add LLM-generated natural language summary."""
+        try:
+            # Prepare context
+            context = f"""프로젝트 분석 결과:
+
+일정:
+- 전체 기간: {ideal_schedule.get('project_duration', 0)}일
+- 임계경로: {' → '.join(ideal_schedule.get('critical_path', [])[:5])}
+- 작업 수: {len(ideal_schedule.get('tasks', []))}개
+
+지연 분석:
+- 총 지연: {delay_analysis.get('total_delay_days', 0)}일
+- 기상 지연: {delay_analysis.get('weather_delays', 0)}일
+- 공휴일: {delay_analysis.get('holiday_delays', 0)}일
+- 새로운 완공일: {delay_analysis.get('new_project_duration', 0)}일
+
+비용:
+- 간접비: {cost_analysis.get('indirect_cost', 0):,.0f}원
+- 지연손해금: {cost_analysis.get('ld', 0):,.0f}원
+- 총 추가비용: {cost_analysis.get('total', 0):,.0f}원
+
+관련 법규: {len(citations)}건"""
+
+            prompt = f"""{context}
+
+위 분석 결과를 프로젝트 관리자가 이해하기 쉽도록 3-4문장으로 요약하세요.
+핵심 지연 원인, 비용 영향, 주요 조치사항을 포함하세요."""
+
+            response = self.llm.chat_completion(
+                messages=[
+                    {"role": "system", "content": self.get_system_prompt()},
+                    {"role": "user", "content": prompt}
+                ],
+                model=self.settings.merger_model,
+                temperature=self.settings.merger_temperature
+            )
+            
+            # Add summary as a card
+            summary_card = UICard(
+                title="💡 종합 분석",
+                value="AI 분석 요약",
+                subtitle=response
+            )
+            
+            ui_response.cards.insert(0, summary_card)  # Add at the beginning
+            
+            return ui_response
+            
+        except Exception as e:
+            print(f"LLM summary error: {e}")
+            return ui_response
     
     def _build_citations(self, law_rag_results: List[Citation]) -> List[Citation]:
         """Build citations from law RAG results."""

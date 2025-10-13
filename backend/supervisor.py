@@ -3,8 +3,10 @@ Supervisor agent for intent routing and orchestration.
 """
 from typing import Dict, Any, List
 import re
+import json
 from .config import get_settings
 from .utils.prompt_loader import get_system_prompt
+from .utils.llm_client import get_llm_client
 
 
 class Supervisor:
@@ -12,6 +14,7 @@ class Supervisor:
     
     def __init__(self):
         self.settings = get_settings()
+        self.llm = get_llm_client()
         self.intent_patterns = {
             "law_regulation": [
                 r"법규|규정|기준|안전|KOSHA|코샤",
@@ -50,6 +53,61 @@ class Supervisor:
         Returns:
             Dict containing routing information and required agents
         """
+        # Try LLM-based routing first
+        if self.llm.is_available():
+            return self._llm_route_intent(message)
+        
+        # Fallback to regex-based routing
+        return self._regex_route_intent(message)
+    
+    def _llm_route_intent(self, message: str) -> Dict[str, Any]:
+        """LLM-based intent routing."""
+        system_prompt = self.get_system_prompt()
+        
+        user_prompt = f"""사용자 메시지를 분석하여 필요한 에이전트를 결정하세요.
+
+사용자 메시지: "{message}"
+
+사용 가능한 에이전트:
+- law_rag: 법규, 규정, 안전 기준 검색
+- threshold_builder: 법규에서 수치 기준 추출
+- cpm_weather_cost: 일정 분석, 날씨 영향, 비용 계산
+
+다음 JSON 형식으로 응답하세요:
+{{
+    "intents": ["의도1", "의도2"],
+    "required_agents": ["agent1", "agent2"],
+    "reasoning": "선택 이유"
+}}"""
+
+        try:
+            response = self.llm.chat_completion(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                model=self.settings.supervisor_model,
+                temperature=self.settings.supervisor_temperature
+            )
+            
+            # Parse JSON response
+            result = json.loads(response)
+            
+            # Always include merger
+            if "merger" not in result["required_agents"]:
+                result["required_agents"].append("merger")
+            
+            result["message"] = message
+            result["analysis_type"] = "llm_based"
+            
+            return result
+            
+        except Exception as e:
+            print(f"LLM routing error: {e}")
+            return self._regex_route_intent(message)
+    
+    def _regex_route_intent(self, message: str) -> Dict[str, Any]:
+        """Regex-based fallback routing."""
         message_lower = message.lower()
         
         # Analyze intent
@@ -83,7 +141,7 @@ class Supervisor:
             "intents": detected_intents,
             "required_agents": list(set(required_agents)),
             "message": message,
-            "analysis_type": "full" if len(required_agents) > 2 else "partial"
+            "analysis_type": "regex_based"
         }
     
     def should_parse_wbs(self, wbs_text: str) -> bool:
