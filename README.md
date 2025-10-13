@@ -18,7 +18,7 @@ AI-powered multi-agent system for construction project management with intellige
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
 │   Frontend      │    │   Backend       │    │   Data Layer    │
-│   (React+Vite)  │◄──►│   (FastAPI)     │◄──►│   (FAISS+JSONL) │
+│   (Flutter)     │◄──►│   (FastAPI)     │◄──►│   (FAISS+JSONL) │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
                               │
                               ▼
@@ -243,8 +243,8 @@ project/
 │       └── prompt_loader.py  # Prompt management utility
 ├── frontend/
 │   ├── src/
-│   │   ├── App.tsx           # Main React component
-│   │   ├── main.tsx          # React entry point
+│   │   ├── App.tsx           # Main Flutter component
+│   │   ├── main.tsx          # Flutter entry point
 │   │   └── components/
 │   │       └── Tables.tsx    # Table components
 │   ├── package.json
