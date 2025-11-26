@@ -110,10 +110,32 @@ class WeatherService:
         return True
     
     def _call_kma_api(self, start_date: date, end_date: date, location: str) -> Dict[str, Any]:
-        """Call KMA API (placeholder implementation)."""
-        # This would be the real API call
-        # For now, return stub data
-        return self._get_stub_forecast(start_date, end_date, location)
+        """Call external weather API (KMA or unified calendar API).
+
+        CALENDAR_ENDPOINT가 설정되어 있으면 그 주소를, 아니면 KMA_ENDPOINT를 사용합니다.
+        실제 정부/기상청 API 스펙에 맞게 params와 응답 매핑 부분만 수정해서 쓰면 됩니다.
+        """
+        base_url = self.settings.calendar_endpoint or self.settings.kma_endpoint
+        if not base_url or base_url.startswith("<"):
+            # 설정이 안 되어 있으면 안전하게 스텁으로 fallback
+            return self._get_stub_forecast(start_date, end_date, location)
+
+        params = {
+            "type": "weather",  # 통합 API라면 타입 구분용
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "location": location,
+            "api_key": self.settings.kma_api_key,
+        }
+
+        resp = requests.get(base_url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+
+        # 외부 API가 이미 이 프로젝트의 forecast 포맷을 그대로 준다면 바로 반환
+        # 그렇지 않다면 아래에서 self._get_stub_forecast와 비슷한 구조로 매핑하세요.
+        # 예시: data가 {"days": [...]} 형태일 것을 기대
+        return data
     
     def get_construction_impact(self, forecast: Dict[str, Any]) -> Dict[str, Any]:
         """Analyze weather impact on construction activities."""

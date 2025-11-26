@@ -3,7 +3,7 @@ Merger Agent for unifying outputs and formatting for UI with LLM-based natural l
 """
 from typing import List, Dict, Any, Optional
 import json
-from ..schemas.io import ChatResponse, UITable, UICard, UIResponse, Citation, CostSummary
+from ..schemas.io import ChatResponse, UITable, UICard, UIResponse, Citation
 from ..config import get_settings, format_currency
 from ..utils.prompt_loader import get_system_prompt, get_query_prompt
 from ..utils.llm_client import get_llm_client
@@ -38,68 +38,101 @@ class MergerAgent:
         # Extract analysis data
         ideal_schedule = cpm_weather_cost_results.get("ideal_schedule", {})
         delay_analysis = cpm_weather_cost_results.get("delay_analysis", {})
-        cost_analysis = cpm_weather_cost_results.get("cost_analysis", {})
         
         # Build delay table
         delay_table = self._build_delay_table(delay_analysis)
         
-        # Build cost summary
-        cost_summary = self._build_cost_summary(cost_analysis)
-        
         # Build UI components (with LLM enhancement if available)
         ui_response = self._build_ui_components(
-            ideal_schedule, delay_analysis, cost_analysis, threshold_results
+            ideal_schedule, delay_analysis, threshold_results
         )
         
         # Add LLM-generated natural language summary if available
         if self.llm.is_available():
             ui_response = self._enhance_with_llm_summary(
-                ui_response, ideal_schedule, delay_analysis, cost_analysis, citations
+                ui_response, ideal_schedule, delay_analysis, citations
             )
         
         return ChatResponse(
             ideal_schedule=ideal_schedule,
             delay_table=delay_table,
-            cost_summary=cost_summary,
             citations=citations,
             ui=ui_response
         )
     
     def _enhance_with_llm_summary(
-        self, 
+        self,
         ui_response: UIResponse,
         ideal_schedule: Dict[str, Any],
         delay_analysis: Dict[str, Any],
-        cost_analysis: Dict[str, Any],
         citations: List[Citation]
     ) -> UIResponse:
         """Add LLM-generated natural language summary."""
         try:
-            # Prepare context
+            original_duration = ideal_schedule.get("project_duration", 0)
+            new_duration = delay_analysis.get("new_project_duration", original_duration)
+            delay_days = max(0, new_duration - original_duration)
+
+            total_delay = delay_analysis.get("total_delay_days", 0)
+            weather_delays = delay_analysis.get("weather_delays", 0)
+            holiday_delays = delay_analysis.get("holiday_delays", 0)
+
+            # 규정 질문 등으로 CPM 데이터가 거의 없는 경우: 법규 중심 요약
+            if original_duration == 0 and total_delay == 0 and citations:
+                citations_text = "\n\n".join(
+                    f"[{i+1}] 문서: {c.document}, 페이지: {c.page}\n내용: {c.snippet}"
+                    for i, c in enumerate(citations)
+                )
+
+                prompt = f"""사용자에게 관련 법규와 기준을 이해하기 쉽게 설명해야 합니다.
+
+검색된 법규/규정 요약:
+{citations_text}
+
+위 내용을 바탕으로, 공사/작업 담당자가 바로 이해할 수 있도록 3-4문장으로 설명하세요.
+- 핵심 수치나 기준(풍속, 온도 등)이 있다면 숫자와 단위를 꼭 포함하세요.
+- 실제 현장에서 어떻게 적용해야 하는지도 간단히 덧붙이세요."""
+
+                response = self.llm.chat_completion(
+                    messages=[
+                        {"role": "system", "content": self.get_system_prompt()},
+                        {"role": "user", "content": prompt}
+                    ],
+                    model=self.settings.merger_model,
+                    temperature=self.settings.merger_temperature
+                )
+
+                summary_card = UICard(
+                    title="💡 법규 설명",
+                    value="AI 법규 요약",
+                    subtitle=response
+                )
+                ui_response.cards.insert(0, summary_card)
+                return ui_response
+
+            # 일반 CPM + 지연 분석 요약
             context = f"""프로젝트 분석 결과:
 
 일정:
-- 전체 기간: {ideal_schedule.get('project_duration', 0)}일
+- 원래 기간: {original_duration}일
+- 날씨/휴일 반영 후 기간: {new_duration}일 (총 {delay_days}일 증가)
 - 임계경로: {' → '.join(ideal_schedule.get('critical_path', [])[:5])}
 - 작업 수: {len(ideal_schedule.get('tasks', []))}개
 
 지연 분석:
-- 총 지연: {delay_analysis.get('total_delay_days', 0)}일
-- 기상 지연: {delay_analysis.get('weather_delays', 0)}일
-- 공휴일: {delay_analysis.get('holiday_delays', 0)}일
-- 새로운 완공일: {delay_analysis.get('new_project_duration', 0)}일
-
-비용:
-- 간접비: {cost_analysis.get('indirect_cost', 0):,.0f}원
-- 지연손해금: {cost_analysis.get('ld', 0):,.0f}원
-- 총 추가비용: {cost_analysis.get('total', 0):,.0f}원
+- 총 지연: {total_delay}일
+- 기상 지연: {weather_delays}일
+- 공휴일: {holiday_delays}일
+- 새로운 완공 기간: {delay_analysis.get('new_project_duration', 0)}일
 
 관련 법규: {len(citations)}건"""
 
             prompt = f"""{context}
 
-위 분석 결과를 프로젝트 관리자가 이해하기 쉽도록 3-4문장으로 요약하세요.
-핵심 지연 원인, 비용 영향, 주요 조치사항을 포함하세요."""
+위 분석 결과와 공정표를 바탕으로 다음을 3-4문장으로 명확하게 설명하세요:
+1. 공사 기간이 총 몇 일 늘어났는지 (원래 기간 대비 비교 포함)
+2. 어떤 이유(기상 조건, 공휴일 등)로 각각 몇 일 정도 늘어났는지
+3. 일정 관리 관점에서 취해야 할 주요 대응 방안"""
 
             response = self.llm.chat_completion(
                 messages=[
@@ -155,16 +188,8 @@ class MergerAgent:
             ]
         }
     
-    def _build_cost_summary(self, cost_analysis: Dict[str, Any]) -> CostSummary:
-        """Build cost summary."""
-        return CostSummary(
-            indirect_cost=cost_analysis.get("indirect_cost", 0.0),
-            ld=cost_analysis.get("ld", 0.0),
-            total=cost_analysis.get("total", 0.0)
-        )
-    
-    def _build_ui_components(self, ideal_schedule: Dict[str, Any], delay_analysis: Dict[str, Any], 
-                           cost_analysis: Dict[str, Any], threshold_results: List[Any]) -> UIResponse:
+    def _build_ui_components(self, ideal_schedule: Dict[str, Any], delay_analysis: Dict[str, Any],
+                           threshold_results: List[Any]) -> UIResponse:
         """Build UI tables and cards."""
         tables = []
         cards = []
@@ -173,13 +198,15 @@ class MergerAgent:
         if ideal_schedule.get("tasks"):
             tables.append(self._build_schedule_table(ideal_schedule))
         
+        # Build weather-adjusted schedule table if there are delays
+        weather_adjusted_table = self._build_weather_adjusted_schedule_table(ideal_schedule, delay_analysis)
+        if weather_adjusted_table is not None:
+            tables.append(weather_adjusted_table)
+        
         # Build delay analysis table
         if delay_analysis.get("delay_rows"):
             tables.append(self._build_delay_analysis_table(delay_analysis))
-        
-        # Build cost cards
-        cards.extend(self._build_cost_cards(cost_analysis))
-        
+
         # Build summary cards
         cards.extend(self._build_summary_cards(ideal_schedule, delay_analysis))
         
@@ -242,35 +269,64 @@ class MergerAgent:
             headers=headers,
             rows=rows
         )
-    
-    def _build_cost_cards(self, cost_analysis: Dict[str, Any]) -> List[UICard]:
-        """Build cost-related cards."""
-        cards = []
-        
-        total_cost = cost_analysis.get("total", 0)
-        indirect_cost = cost_analysis.get("indirect_cost", 0)
-        ld_cost = cost_analysis.get("ld", 0)
-        delay_days = cost_analysis.get("delay_days", 0)
-        
-        cards.append(UICard(
-            title="총 추가 비용",
-            value=format_currency(total_cost),
-            subtitle=f"{delay_days}일 지연 기준"
-        ))
-        
-        cards.append(UICard(
-            title="간접비",
-            value=format_currency(indirect_cost),
-            subtitle=f"일일 {format_currency(cost_analysis.get('indirect_cost_per_day', 0))}"
-        ))
-        
-        cards.append(UICard(
-            title="지연손해금",
-            value=format_currency(ld_cost),
-            subtitle="계약 조건 기준"
-        ))
-        
-        return cards
+
+    def _build_weather_adjusted_schedule_table(self, ideal_schedule: Dict[str, Any], delay_analysis: Dict[str, Any]) -> Optional[UITable]:
+        """Build weather-adjusted schedule table based on total delay days.
+
+        단순화된 가정: 총 지연일수를 임계경로(critical path) 작업의 ES/EF에만 일괄적으로 더해
+        '날씨 반영 일정'을 계산한다. 비임계 작업은 원래 일정 유지.
+        """
+        tasks = ideal_schedule.get("tasks", [])
+        if not tasks:
+            return None
+
+        delay_days = delay_analysis.get("total_delay_days", 0)
+        if delay_days <= 0:
+            return None
+
+        headers = [
+            "작업ID",
+            "작업명",
+            "기간(일)",
+            "작업유형",
+            "ES(원안)",
+            "EF(원안)",
+            "ES(날씨 반영)",
+            "EF(날씨 반영)",
+            "임계경로"
+        ]
+        rows = []
+
+        for task in tasks:
+            es = task.get("es", 0)
+            ef = task.get("ef", 0)
+            is_critical = task.get("is_critical", False)
+
+            if is_critical:
+                adj_es = es + delay_days
+                adj_ef = ef + delay_days
+            else:
+                adj_es = es
+                adj_ef = ef
+
+            row = [
+                task.get("id", ""),
+                task.get("name", ""),
+                task.get("duration", 0),
+                task.get("work_type", ""),
+                es,
+                ef,
+                adj_es,
+                adj_ef,
+                "예" if is_critical else "아니오"
+            ]
+            rows.append(row)
+
+        return UITable(
+            title="날씨 반영 일정표",
+            headers=headers,
+            rows=rows
+        )
     
     def _build_summary_cards(self, ideal_schedule: Dict[str, Any], delay_analysis: Dict[str, Any]) -> List[UICard]:
         """Build summary cards."""
@@ -279,12 +335,28 @@ class MergerAgent:
         # Project duration
         original_duration = ideal_schedule.get("project_duration", 0)
         new_duration = delay_analysis.get("new_project_duration", original_duration)
-        delay_days = new_duration - original_duration
+        delay_days = max(0, new_duration - original_duration)
         
         cards.append(UICard(
-            title="프로젝트 기간",
+            title="총 공사 기간",
             value=f"{new_duration}일",
-            subtitle=f"원래 {original_duration}일 → {delay_days}일 지연"
+            subtitle=f"원래 {original_duration}일 기준, +{delay_days}일 지연"
+        ))
+        
+        # Holiday impact
+        holiday_delays = delay_analysis.get("holiday_delays", 0)
+        cards.append(UICard(
+            title="공휴일 지연",
+            value=f"{holiday_delays}일",
+            subtitle="공휴일/비근무일로 인한 지연"
+        ))
+        
+        # Weather impact
+        weather_delays = delay_analysis.get("weather_delays", 0)
+        cards.append(UICard(
+            title="날씨 지연",
+            value=f"{weather_delays}일",
+            subtitle="예상 기상 조건 불량일"
         ))
         
         # Critical path
@@ -293,14 +365,6 @@ class MergerAgent:
             title="임계경로",
             value=f"{len(critical_path)}개 작업",
             subtitle="→".join(critical_path[:3]) + ("..." if len(critical_path) > 3 else "")
-        ))
-        
-        # Weather impact
-        weather_delays = delay_analysis.get("weather_delays", 0)
-        cards.append(UICard(
-            title="기상 지연",
-            value=f"{weather_delays}일",
-            subtitle="예상 기상 조건 불량일"
         ))
         
         return cards
@@ -340,8 +404,7 @@ class MergerAgent:
                 "result_merging",
                 "ui_table_generation",
                 "ui_card_generation",
-                "citation_formatting",
-                "cost_formatting"
+                "citation_formatting"
             ],
             "output_formats": [
                 "ChatResponse",

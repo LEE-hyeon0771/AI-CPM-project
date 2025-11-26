@@ -4,7 +4,7 @@ FastAPI application for Smart Construction Scheduling & Economic Analysis.
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 import uvicorn
 
 from .config import get_settings
@@ -45,6 +45,8 @@ threshold_builder = ThresholdBuilderAgent()
 cpm_weather_cost_agent = CPMWeatherCostAgent()
 merger_agent = MergerAgent()
 rules_store = RulesStore()
+# Last parsed WBS for reuse in follow-up chat requests
+last_wbs_json: Optional[List[Any]] = None
 
 
 @app.get("/")
@@ -74,19 +76,41 @@ async def setup_contract(request: ContractSetupRequest):
 async def chat(request: ChatRequest):
     """Main chat endpoint for project analysis."""
     try:
-        # Route intent
+        global last_wbs_json
+
+        # Route intent (includes analysis_mode and forecast options when LLM is used)
         routing = supervisor.route_intent(request.message)
         
-        # Parse WBS if provided
+        # Parse WBS:
+        # 1) 사용자가 wbs_text에 뭔가 적어주면 그걸 최우선으로 파싱
+        # 2) 비어 있으면 직전 요청에서 사용한 WBS를 재사용
+        # 3) 그래도 없고 일정 분석이 필요하면 message 전체에서 자연어 WBS를 LLM/파서로 추출
         wbs_json = None
-        if supervisor.should_parse_wbs(request.wbs_text):
-            wbs_json = wbs_parser.parse_wbs(request.wbs_text)
+        raw_wbs_text = (request.wbs_text or "").strip()
+
+        if raw_wbs_text:
+            # 명시적으로 WBS 텍스트를 준 경우
+            wbs_json = wbs_parser.parse_wbs(raw_wbs_text)
+            last_wbs_json = wbs_json
+        else:
+            # wbs_text를 비워둔 경우
+            if last_wbs_json is not None:
+                # 이전에 파싱해 둔 WBS 재사용 (follow-up 요청)
+                wbs_json = last_wbs_json
+            else:
+                # 첫 요청인데 wbs_text가 비어 있고, 일정/CPM 분석이 필요하다면
+                if "cpm_weather_cost" in routing.get("required_agents", []):
+                    # 자연어로 된 message 전체에서 WBS 추출 시도 (LLM + 규칙 기반)
+                    wbs_json = wbs_parser.parse_wbs(request.message)
+                    if wbs_json:
+                        last_wbs_json = wbs_json
         
         # Execute required agents
         results = {}
         
         if "law_rag" in routing["required_agents"]:
-            work_types = supervisor.extract_work_types(request.wbs_text or "")
+            work_types_source = request.wbs_text or request.message or ""
+            work_types = supervisor.extract_work_types(work_types_source)
             results["law_rag"] = law_rag_agent.search_regulations(
                 request.message, work_types
             )
@@ -98,8 +122,18 @@ async def chat(request: ChatRequest):
                 )
         
         if "cpm_weather_cost" in routing["required_agents"]:
+            # Forecast control parameters from routing (may be filled by LLM)
+            forecast_offset_days = routing.get("forecast_offset_days", 0)
+            forecast_duration_days = routing.get("forecast_duration_days")
+            analysis_mode = routing.get("analysis_mode", "full")
+
             results["cpm_weather_cost"] = cpm_weather_cost_agent.analyze(
-                wbs_json, contract_data, results.get("threshold_builder", [])
+                wbs_json,
+                contract_data,
+                results.get("threshold_builder", []),
+                forecast_offset_days=forecast_offset_days,
+                forecast_duration_days=forecast_duration_days,
+                analysis_mode=analysis_mode,
             )
         
         # Merge results
@@ -111,7 +145,6 @@ async def chat(request: ChatRequest):
         return ChatResponse(
             ideal_schedule={},
             delay_table={},
-            cost_summary={"indirect_cost": 0, "ld": 0, "total": 0},
             citations=[],
             ui={"tables": [], "cards": []}
         )

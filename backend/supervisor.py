@@ -65,19 +65,26 @@ class Supervisor:
         system_prompt = self.get_system_prompt()
         
         user_prompt = f"""사용자 메시지를 분석하여 필요한 에이전트를 결정하세요.
-
 사용자 메시지: "{message}"
 
 사용 가능한 에이전트:
 - law_rag: 법규, 규정, 안전 기준 검색
 - threshold_builder: 법규에서 수치 기준 추출
-- cpm_weather_cost: 일정 분석, 날씨 영향, 비용 계산
+- cpm_weather_cost: 일정 분석, 날씨 및 공휴일에 따른 지연 분석
 
-다음 JSON 형식으로 응답하세요:
+또한 사용자의 요청이 기존 계약/WBS 기반 일정에
+일기예보나 공휴일 정보를 반영하여 '다시 일정/공정표를 짜달라'는 의미인지도 분석하세요.
+예를 들어 "다음주 화요일에 비 온다고 하던데 공정표 다시 짜줘",
+"일주일 후 날씨 반영해서 다시 짜줘" 같은 문장입니다.
+
+다음 JSON 형식으로만 응답하세요:
 {{
     "intents": ["의도1", "의도2"],
     "required_agents": ["agent1", "agent2"],
-    "reasoning": "선택 이유"
+    "reasoning": "선택 이유",
+    "analysis_mode": "initial | reforecast | full 중 하나",
+    "forecast_offset_days": 정수 (예: 0, 7),
+    "forecast_duration_days": 정수 또는 null
 }}"""
 
         try:
@@ -92,6 +99,14 @@ class Supervisor:
             
             # Parse JSON response
             result = json.loads(response)
+            
+            # Fill defaults for optional fields
+            if "analysis_mode" not in result:
+                result["analysis_mode"] = "full"
+            if "forecast_offset_days" not in result:
+                result["forecast_offset_days"] = 0
+            if "forecast_duration_days" not in result:
+                result["forecast_duration_days"] = None
             
             # Always include merger
             if "merger" not in result["required_agents"]:
@@ -141,7 +156,11 @@ class Supervisor:
             "intents": detected_intents,
             "required_agents": list(set(required_agents)),
             "message": message,
-            "analysis_type": "regex_based"
+            "analysis_type": "regex_based",
+            # 기본값: 전체 구간 분석
+            "analysis_mode": "full",
+            "forecast_offset_days": 0,
+            "forecast_duration_days": None
         }
     
     def should_parse_wbs(self, wbs_text: str) -> bool:

@@ -59,13 +59,6 @@ class DelayRow(BaseModel):
     cumulative: int
 
 
-class CostSummary(BaseModel):
-    """Cost analysis summary."""
-    indirect_cost: float
-    ld: float
-    total: float
-
-
 class UITable(BaseModel):
     """UI table model."""
     title: str
@@ -90,7 +83,6 @@ class ChatResponse(BaseModel):
     """Chat response model."""
     ideal_schedule: Dict[str, Any]
     delay_table: Dict[str, Any]
-    cost_summary: CostSummary
     citations: List[Citation] = []
     ui: UIResponse
 
