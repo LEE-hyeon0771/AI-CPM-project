@@ -61,20 +61,24 @@ class CPMWeatherCostAgent:
         ideal_schedule = self.cpm_service.compute_cpm(wbs_items, start_date)
         
         # Determine forecast window for weather/holiday impact
-        # analysis_mode은 현재 전체 분석("full") 기반으로 사용하며,
-        # LLM이 설정한 forecast_offset_days/duration에 따라 예보 구간을 조정한다.
+        # analysis_mode:
+        # - "initial": 이상적인 CPM만 계산 (날씨/공휴일 API 호출 없음)
+        # - "full" 또는 "reforecast": 날씨/공휴일을 반영한 지연 분석 수행
         if forecast_offset_days is None:
             forecast_offset_days = 0
         forecast_start_date = start_date + timedelta(days=forecast_offset_days)
         
         # Simulate delays based on weather and holidays in the chosen window
-        delay_analysis = self._simulate_delays(
-            ideal_schedule,
-            wbs_items,
-            start_date,
-            forecast_start_date=forecast_start_date,
-            forecast_duration_days=forecast_duration_days,
-        )
+        if analysis_mode == "initial":
+            delay_analysis = self._build_zero_delay_analysis(ideal_schedule)
+        else:
+            delay_analysis = self._simulate_delays(
+                ideal_schedule,
+                wbs_items,
+                start_date,
+                forecast_start_date=forecast_start_date,
+                forecast_duration_days=forecast_duration_days,
+            )
         
         # Generate recommendations
         recommendations = self._generate_recommendations(delay_analysis)
@@ -83,7 +87,8 @@ class CPMWeatherCostAgent:
             "ideal_schedule": ideal_schedule,
             "delay_analysis": delay_analysis,
             "recommendations": recommendations,
-            "analysis_timestamp": date.today().isoformat()
+            "analysis_timestamp": date.today().isoformat(),
+            "analysis_mode": analysis_mode,
         }
     
     def _get_start_date(self, contract_data: Dict[str, Any]) -> date:
@@ -168,6 +173,19 @@ class CPMWeatherCostAgent:
                 affected_tasks.append(task["id"])
         
         return affected_tasks
+    
+    def _build_zero_delay_analysis(self, ideal_schedule: Dict[str, Any]) -> Dict[str, Any]:
+        """Build delay analysis dict with no delays (used for initial CPM only)."""
+        project_duration = ideal_schedule.get("project_duration", 0)
+        return {
+            "total_delay_days": 0,
+            "weather_delays": 0,
+            "holiday_delays": 0,
+            "delay_rows": [],
+            "weather_forecast": {},
+            "holiday_impact": {},
+            "new_project_duration": project_duration,
+        }
     
     def _generate_recommendations(self, delay_analysis: Dict[str, Any]) -> List[str]:
         """Generate recommendations based on analysis with LLM reasoning."""

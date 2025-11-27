@@ -76,6 +76,7 @@ async def setup_contract(request: ContractSetupRequest):
 async def chat(request: ChatRequest):
     """Main chat endpoint for project analysis."""
     try:
+        print(">>> /api/chat called")
         global last_wbs_json
 
         # Route intent (includes analysis_mode and forecast options when LLM is used)
@@ -108,6 +109,7 @@ async def chat(request: ChatRequest):
         # Execute required agents
         results = {}
         
+        # 1) 법규/안전 규정 검색 (명시적으로 요청된 경우)
         if "law_rag" in routing["required_agents"]:
             work_types_source = request.wbs_text or request.message or ""
             work_types = supervisor.extract_work_types(work_types_source)
@@ -115,17 +117,34 @@ async def chat(request: ChatRequest):
                 request.message, work_types
             )
         
-        if "threshold_builder" in routing["required_agents"]:
-            if "law_rag" in results:
-                results["threshold_builder"] = threshold_builder.build_rules(
-                    results["law_rag"]
+        # 2) 일정/CPM 분석이 필요한데 법규 검색이 포함되지 않은 경우에도,
+        #    WBS에 등장한 작업 유형 기준으로 관련 안전 규정을 자동으로 검색
+        if "cpm_weather_cost" in routing["required_agents"] and "law_rag" not in results:
+            if wbs_json is not None:
+                work_types_source = request.wbs_text or request.message or ""
+                work_types = supervisor.extract_work_types(work_types_source)
+                results["law_rag"] = law_rag_agent.search_regulations(
+                    "입력된 공사 작업들의 안전 규정과 작업중지 기준을 알려줘.", work_types
                 )
+        
+        # 3) Threshold 규칙 생성: law_rag 결과가 있다면 항상 규칙으로 정리
+        if "law_rag" in results:
+            results["threshold_builder"] = threshold_builder.build_rules(
+                results["law_rag"]
+            )
         
         if "cpm_weather_cost" in routing["required_agents"]:
             # Forecast control parameters from routing (may be filled by LLM)
             forecast_offset_days = routing.get("forecast_offset_days", 0)
             forecast_duration_days = routing.get("forecast_duration_days")
             analysis_mode = routing.get("analysis_mode", "full")
+
+            # 첫 번째 WBS 기반 분석(새 WBS가 들어온 경우)에서는 이상적인 CPM만 계산하고,
+            # 날씨/공휴일을 반영한 지연 분석은 수행하지 않는다.
+            # 이후 follow-up 요청에서만 weather/holiday 분석을 수행.
+            is_new_wbs = bool(raw_wbs_text)
+            if is_new_wbs:
+                analysis_mode = "initial"
 
             results["cpm_weather_cost"] = cpm_weather_cost_agent.analyze(
                 wbs_json,
@@ -150,6 +169,9 @@ async def chat(request: ChatRequest):
         )
         
     except Exception as e:
+        # Log full traceback to server console for easier debugging
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 

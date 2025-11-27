@@ -91,8 +91,13 @@ class WBSParser:
     
     def _llm_parse_wbs(self, wbs_text: str) -> List[WBSItem]:
         """Use LLM to parse completely natural WBS text into WBSItem list."""
+        # NOTE:
+        # get_query_prompt(agent_name) 내부에서 자동으로 "<agent_name>_query.txt"
+        # 파일을 찾기 때문에, 여기서는 에이전트 이름만 넘겨야 한다.
+        # "wbs_parser_query" 를 넘기면 "wbs_parser_query_query.txt" 를 찾게 되어
+        # 프롬프트 파일을 찾지 못하는 문제가 발생한다.
         prompt = get_query_prompt(
-            "wbs_parser_query",
+            "wbs_parser",
             wbs_text=wbs_text
         )
 
@@ -134,6 +139,9 @@ class WBSParser:
         if isinstance(data, list):
             for obj in data:
                 try:
+                    # LLM이 "work_type" 대신 "type" 키를 사용할 수도 있으므로 보정
+                    if "work_type" not in obj and "type" in obj:
+                        obj = {**obj, "work_type": obj["type"]}
                     # 기본 키 매핑을 가정: id, name, duration, work_type, predecessors
                     items.append(WBSItem(**obj))
                 except Exception as e:

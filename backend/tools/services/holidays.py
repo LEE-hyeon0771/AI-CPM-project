@@ -99,7 +99,7 @@ class HolidayService:
         CALENDAR_ENDPOINT가 설정되어 있으면 그 주소를, 아니면 HOLIDAY_ENDPOINT를 사용합니다.
         실제 정부 API 스펙에 맞게 params와 응답 매핑 부분만 수정해서 쓰면 됩니다.
         """
-        base_url = self.settings.calendar_endpoint or self.holiday_endpoint
+        base_url = self.settings.calendar_endpoint or self.settings.holiday_endpoint
         if not base_url or base_url.startswith("<"):
             # 설정이 안 되어 있으면 안전하게 스텁으로 fallback
             return self._get_stub_holidays(year)

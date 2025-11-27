@@ -72,6 +72,12 @@ frontend/dist/
 frontend/.vite/
 frontend/.cache/
 
+# Flutter / Dart (Web & Mobile)
+**/.dart_tool/
+frontend/.flutter-plugins
+frontend/.flutter-plugins-dependencies
+frontend/build/
+
 # OS
 Thumbs.db
 .DS_Store
