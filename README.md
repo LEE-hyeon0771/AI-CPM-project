@@ -80,7 +80,58 @@ Backend (FastAPI, backend/app.py)
 
 ### 4. 프로젝트 구조 (Project Structure)
 
-
+```text
+AI-CPM-project/
+├── backend/
+│   ├── app.py                 # FastAPI 엔트리포인트 및 HTTP 엔드포인트
+│   ├── config.py              # 환경설정 로딩 (Settings)
+│   ├── supervisor.py          # Supervisor 에이전트 (의도 분석 및 라우팅)
+│   ├── schemas/
+│   │   └── io.py              # Pydantic 요청/응답 모델 (ChatRequest, ChatResponse 등)
+│   ├── agents/
+│   │   ├── law_rag.py         # 법규 RAG 에이전트 (LawRAGAgent)
+│   │   ├── threshold_builder.py # 규정에서 임계값 추출 (ThresholdBuilderAgent)
+│   │   ├── cpm_weather_cost.py  # CPM + 날씨 + 공휴일 분석 (CPMWeatherCostAgent)
+│   │   └── merger.py          # 결과 통합·요약 에이전트 (MergerAgent)
+│   ├── tools/
+│   │   ├── services/
+│   │   │   ├── wbs_parser.py  # 자연어 WBS 파서 (규칙 + LLM 하이브리드)
+│   │   │   ├── cpm.py         # CPM 계산기 (ES/EF/LS/LF/TF)
+│   │   │   ├── weather.py     # WeatherService (KMA/캘린더 API or stub)
+│   │   │   ├── holidays.py    # HolidayService (공휴일·근무일 계산)
+│   │   │   └── cost.py        # 비용 관련 로직 (확장 포인트)
+│   │   ├── rag/
+│   │   │   └── faiss_store.py # RagStoreFaiss (FAISS 검색 래퍼)
+│   │   └── rules/
+│   │       └── store.py       # RulesStore (규칙 jsonl 저장/로드)
+│   └── utils/
+│       ├── prompt_loader.py   # PromptLoader, get_system_prompt, get_query_prompt
+│       └── llm_client.py      # OpenAI 기반 LLMClient 래퍼
+│
+├── frontend/
+│   ├── lib/
+│   │   ├── home.dart          # Flutter 진입 화면 (두 기능 선택 메뉴)
+│   │   ├── main.dart          # 스마트 건설 일정 분석 화면 (CPM + 날씨 + 규정)
+│   │   └── main2.dart         # 건설 안전 규정 Q&A 화면 (법규 전용)
+│   ├── pubspec.yaml           # Flutter 의존성 정의
+│   └── android/, web/, ...    # Flutter 플랫폼별 빌드 스캐폴드
+│
+├── prompts/                   # 에이전트별 LLM 프롬프트
+│   ├── supervisor_system.txt
+│   ├── law_rag_system.txt / law_rag_query.txt
+│   ├── threshold_builder_system.txt / threshold_builder_extraction.txt
+│   ├── cpm_analysis_system.txt / cpm_analysis_query.txt
+│   ├── merger_system.txt / merger_formatting.txt
+│   └── wbs_parser_system.txt / wbs_parser_query.txt
+│
+├── data/
+│   ├── faiss/                 # 법규 PDF 임베딩 인덱스 (index.faiss, meta.jsonl)
+│   └── rules/                 # 추출된 규칙(rule) jsonl
+│
+├── tests/                     # pytest 기반 백엔드 테스트
+├── env.example.txt            # .env 예시 템플릿
+├── requirements.txt           # Python 의존성 목록
+└── README.md
 ```
 
 ---
