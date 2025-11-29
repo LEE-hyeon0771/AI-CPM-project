@@ -81,6 +81,17 @@ async def chat(request: ChatRequest):
 
         # Route intent (includes analysis_mode and forecast options when LLM is used)
         routing = supervisor.route_intent(request.message)
+
+        # frontend에서 명시적으로 법규 전용 모드(law_only)를 요청한 경우,
+        # Supervisor의 판단과 무관하게 law_rag만 실행하도록 라우팅을 강제한다.
+        if getattr(request, "mode", None) == "law_only":
+            routing = {
+                # 법규 검색 + 최종 포맷팅(머지)만 수행
+                "required_agents": ["law_rag", "merger"],
+                "analysis_mode": "law_only",
+                "forecast_offset_days": 0,
+                "forecast_duration_days": None,
+            }
         
         # Parse WBS:
         # 1) 사용자가 wbs_text에 뭔가 적어주면 그걸 최우선으로 파싱

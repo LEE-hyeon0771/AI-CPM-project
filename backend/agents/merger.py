@@ -237,6 +237,10 @@ class MergerAgent:
                            analysis_mode: str, threshold_results: List[Any],
                            wbs_work_types: List[str]) -> UIResponse:
         """Build UI tables and cards."""
+        # 법규 전용 모드(law_only)인 경우에는 CPM/지연 관련 테이블/카드는 만들지 않는다.
+        # 대신 LLM 요약 카드(💡 법규 설명 등)는 _enhance_with_llm_summary 에서 추가된다.
+        if analysis_mode == "law_only":
+            return UIResponse(tables=[], cards=[])
         tables = []
         cards = []
         
@@ -337,23 +341,35 @@ class MergerAgent:
             "작업유형",
             "ES(원안)",
             "EF(원안)",
+            "LS(원안)",
+            "LF(원안)",
+            "TF(원안)",
             "ES(날씨 반영)",
             "EF(날씨 반영)",
-            "임계경로"
+            "LS(날씨 반영)",
+            "LF(날씨 반영)",
+            "임계경로",
         ]
         rows = []
 
         for task in tasks:
             es = task.get("es", 0)
             ef = task.get("ef", 0)
+            ls = task.get("ls", 0)
+            lf = task.get("lf", 0)
+            tf = task.get("tf", 0)
             is_critical = task.get("is_critical", False)
 
             if is_critical:
                 adj_es = es + delay_days
                 adj_ef = ef + delay_days
+                adj_ls = ls + delay_days
+                adj_lf = lf + delay_days
             else:
                 adj_es = es
                 adj_ef = ef
+                adj_ls = ls
+                adj_lf = lf
 
             row = [
                 task.get("id", ""),
@@ -362,8 +378,13 @@ class MergerAgent:
                 task.get("work_type", ""),
                 es,
                 ef,
+                ls,
+                lf,
+                tf,
                 adj_es,
                 adj_ef,
+                adj_ls,
+                adj_lf,
                 "예" if is_critical else "아니오"
             ]
             rows.append(row)

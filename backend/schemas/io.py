@@ -20,6 +20,9 @@ class ChatRequest(BaseModel):
     """Chat request model."""
     message: str
     wbs_text: Optional[str] = None
+    # frontend에서 의도적으로 특정 모드를 지정할 수 있도록 하는 선택적 필드
+    # 예: "law_only" → 법규 전용 Q&A 화면에서 사용
+    mode: Optional[str] = None
 
 
 # Response Models
