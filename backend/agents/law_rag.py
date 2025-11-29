@@ -17,6 +17,20 @@ class LawRAGAgent:
         self.settings = get_settings()
         self.rag_store = None
         self.llm = get_llm_client()
+
+        # Work type → 실제 한글 공종/작업명 키워드 매핑 (메타데이터 강화)
+        # WBS에서 쓰는 코드(EARTHWORK, CONCRETE 등)를
+        # FAISS 메타/본문에 등장하는 한글 표현과 연결해 검색 품질을 높인다.
+        self.work_type_keywords = {
+            "EARTHWORK": ["토공", "기초 토공", "굴착", "흙막이", "토사 제거", "기초 공사", "말뚝"],
+            "CONCRETE": ["콘크리트", "기초 콘크리트", "기초 타설", "구조 골조", "골조 콘크리트", "슬래브 타설"],
+            "STEEL": ["철골", "강재", "강구조", "철골 구조", "철골 조립"],
+            "FINISHING": ["마감", "마감공사", "내부 마감", "외부 마감", "타일", "도장"],
+            "CRANE": ["크레인", "타워크레인", "호이스트"],
+            "ELECTRICAL": ["전기", "배선", "조명", "전력"],
+            "PLUMBING": ["배관", "급수", "배수", "상하수도"],
+            "GENERAL": ["건설 공사", "작업 전반", "현장 일반"],
+        }
         self._initialize_rag_store()
     
     def _initialize_rag_store(self):
@@ -49,11 +63,25 @@ class LawRAGAgent:
             return self._get_fallback_citations(query, work_types)
         
         try:
+            # 작업 유형을 한글 공종/작업명 키워드로 확장
+            expanded_terms: List[str] = []
+            if work_types:
+                for wt in work_types:
+                    if wt in self.work_type_keywords:
+                        expanded_terms.extend(self.work_type_keywords[wt])
+                    else:
+                        expanded_terms.append(wt)
+            work_types_str = ", ".join(sorted(set(expanded_terms))) if expanded_terms else "전체"
+
             # Use prompt-based query formatting
+            # get_query_prompt(agent_name) 가 내부에서 "<agent_name>_query.txt" 를 찾으므로
+            # 여기서는 단순히 "law_rag" 만 넘긴다.
+            # 기존 "law_rag_query" 는 "law_rag_query_query.txt" 를 찾게 되어
+            # 프롬프트 파일을 못 찾는 문제가 있었다.
             formatted_query = get_query_prompt(
-                "law_rag_query",
+                "law_rag",
                 query=query,
-                work_types=", ".join(work_types) if work_types else "전체"
+                work_types=work_types_str
             )
             
             # Search the FAISS index
@@ -164,14 +192,24 @@ class LawRAGAgent:
             )
         ]
         
-        # Filter by work type if specified
+        # Filter by work type (확장된 한글 키워드 기준) if specified
         if work_types:
+            # work_types 코드(EARTHWORK 등)를 한글 키워드로 확장
+            expanded_terms: List[str] = []
+            for wt in work_types:
+                if wt in self.work_type_keywords:
+                    expanded_terms.extend(self.work_type_keywords[wt])
+                else:
+                    expanded_terms.append(wt)
+
+            lowered_terms = [t.lower() for t in expanded_terms]
+
             filtered_citations = []
             for citation in fallback_citations:
-                for work_type in work_types:
-                    if work_type.lower() in citation.snippet.lower():
-                        filtered_citations.append(citation)
-                        break
+                text = f"{citation.document} {citation.snippet}".lower()
+                if any(term in text for term in lowered_terms):
+                    filtered_citations.append(citation)
+
             return filtered_citations if filtered_citations else fallback_citations
         
         return fallback_citations

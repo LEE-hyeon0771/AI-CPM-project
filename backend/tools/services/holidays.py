@@ -94,10 +94,36 @@ class HolidayService:
         return holidays
     
     def _call_holiday_api(self, year: int) -> Set[date]:
-        """Call holiday API (placeholder implementation)."""
-        # This would be the real API call
-        # For now, return stub data
-        return self._get_stub_holidays(year)
+        """Call external holiday API (정부 공휴일 API 또는 통합 캘린더 API).
+
+        CALENDAR_ENDPOINT가 설정되어 있으면 그 주소를, 아니면 HOLIDAY_ENDPOINT를 사용합니다.
+        실제 정부 API 스펙에 맞게 params와 응답 매핑 부분만 수정해서 쓰면 됩니다.
+        """
+        base_url = self.settings.calendar_endpoint or self.settings.holiday_endpoint
+        if not base_url or base_url.startswith("<"):
+            # 설정이 안 되어 있으면 안전하게 스텁으로 fallback
+            return self._get_stub_holidays(year)
+
+        params = {
+            "type": "holiday",  # 통합 API라면 타입 구분용
+            "year": year,
+            "api_key": self.settings.holiday_api_key,
+        }
+
+        resp = requests.get(base_url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+
+        # data 예시 형태를 {"holidays": ["2025-01-01", ...]} 로 가정
+        # 실제 응답 포맷에 맞게 date.fromisoformat(...) 부분만 조정해서 사용하세요.
+        holidays: Set[date] = set()
+        for d in data.get("holidays", []):
+            try:
+                holidays.add(date.fromisoformat(d))
+            except Exception:
+                continue
+
+        return holidays
     
     def is_holiday(self, check_date: date) -> bool:
         """Check if a date is a holiday."""

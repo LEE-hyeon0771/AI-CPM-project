@@ -1,504 +1,299 @@
-# Smart Construction Scheduling & Economic Analysis
+## Smart Construction Scheduling & Economic Analysis
 
-AI-powered multi-agent system for construction project management with intelligent scheduling, weather impact analysis, and cost optimization.
+AI를 활용하여 **건설 공사 WBS·일정·기상·법규 정보를 통합 분석**하는 멀티 에이전트 기반 시스템입니다.  
+자연어로 질의하면, CPM 기반 이상 일정, 날씨·공휴일에 따른 지연 분석, 건설 안전 규정 요약을 한 번에 제공합니다.
 
-## Features
+---
 
-- **🤖 LLM-Powered Multi-Agent System**: GPT-4/3.5 integrated into all agents for intelligent reasoning
-- **🧠 Intelligent Intent Routing**: LLM-based supervisor understands natural language queries
-- **📚 Smart RAG System**: FAISS vector search + LLM interpretation for construction regulations
-- **📊 AI-Enhanced CPM Analysis**: LLM understands weather data and generates optimized schedules
-- **💰 Intelligent Cost Analysis**: Automatic calculation with AI-driven recommendations
-- **🌤️ Weather-Aware Scheduling**: Real-time weather integration with LLM-based impact analysis
-- **📝 Natural Language Responses**: LLM generates clear, actionable insights in Korean
-- **🎯 Prompt Management System**: Centralized prompt files for easy customization
-- **🖥️ Modern Web UI**: React + Vite + Tailwind CSS frontend
+### 1. 프로젝트 목적
 
-## Architecture
+- **현실적인 공정관리 지원**: 공사 담당자가 자연어로 WBS와 요구사항을 입력하면, CPM 기반 이상 일정과 날씨·공휴일을 반영한 지연을 자동 계산합니다.
+- **안전 규정 준수 보조**: KOSHA 등 안전 규정 PDF를 RAG 인덱스로 구축하여, 공사 종류·작업 유형별 안전 기준과 작업중지 기준을 자동으로 찾아 요약합니다.
+- **의사결정 품질 향상**: LLM이 각 에이전트 결과를 요약·통합하여, PM/소장 입장에서 바로 활용 가능한 “경영자용 요약(executive summary)”를 생성합니다.
+- **연구·논문 활용 가능성**: CPM, RAG, 멀티 에이전트, LLM 프롬프트 엔지니어링을 결합한 아키텍처로, 공정관리·건설 인공지능 분야 논문 실험 플랫폼으로 활용될 수 있습니다.
+
+---
+
+### 2. 프로젝트 의의
+
+- **전통 공정관리 기법과 LLM의 결합**  
+  - 기존 CPM·PERT 도구는 정형화된 입력과 전문적인 조작이 필요했습니다.  
+  - 본 프로젝트는 자연어 WBS → 구조화 → CPM → 기상·공휴일 시뮬레이션 → 법규 RAG를 **단일 파이프라인**으로 구성하여, 비전문가도 쉽게 활용할 수 있도록 합니다.
+
+- **규정 기반 안전관리의 자동화 가능성 제시**  
+  - `law_rag.py` + `threshold_builder.py` + `rules/store.py` 는 안전 규정 문서에서 **풍속, 온도, 강우량, 작업중지 기준 등 수치 규정**을 추출·구조화하는 체인을 제공합니다.
+  - 이는 향후 “규정 기반 디지털 트윈” 연구의 핵심 컴포넌트로 확장 가능합니다.
+
+- **에이전트–툴–체인 구조의 실증 예제**  
+  - Supervisor–Agents–Tools–RAG–LLM 으로 구성된 구조는 **멀티 에이전트 시스템 설계·검증**에 좋은 레퍼런스가 됩니다.
+
+---
+
+### 3. 전체 아키텍처 (Agent–Tool–Chain)
+
+```text
+사용자 (웹/모바일 Flutter UI)
+        │
+        ▼
+Frontend (Flutter, lib/home.dart)
+  ├─ /api/chat      → 일정·안전 통합 분석
+  └─ /api/rules/... → 규칙 리프레시·조회
+        │
+        ▼
+Backend (FastAPI, backend/app.py)
+  ├─ Supervisor (supervisor.py)
+  │    └─ LLM 기반 의도 분석 → required_agents 결정
+  ├─ Agents (backend/agents/)
+  │    ├─ LawRAGAgent (law_rag.py)
+  │    ├─ ThresholdBuilderAgent (threshold_builder.py)
+  │    ├─ CPMWeatherCostAgent (cpm_weather_cost.py)
+  │    └─ MergerAgent (merger.py)
+  └─ Tools (backend/tools/services/, rag/, rules/)
+       ├─ WBSParser (wbs_parser.py)
+       ├─ CPMService (cpm.py)
+       ├─ WeatherService (weather.py)
+       ├─ HolidayService (holidays.py)
+       ├─ RagStoreFaiss (rag/faiss_store.py)
+       └─ RulesStore (rules/store.py)
+
+데이터 계층
+  ├─ prompts/*.txt        : LLM 프롬프트
+  ├─ data/faiss/*.faiss   : 법규 RAG 인덱스
+  └─ data/rules/*.jsonl   : 추출된 규칙
+```
+
+**Agent–Tool–Chain 흐름 (일반 일정 + 안전 규정 질문)**  
+1. `frontend/lib/main.dart` 의 `/api/chat` 호출 → `backend/app.py::chat` 진입  
+2. `Supervisor` 가 `message`(자연어 질의)를 분석 → `required_agents` 결정  
+3. `WBSParser` 가 `wbs_text` 또는 `message` 에서 WBS를 구조화 (`WBSItem` 리스트)  
+4. `LawRAGAgent` 가 `RagStoreFaiss` 를 통해 관련 규정 스니펫을 검색 (`Citation` 리스트)  
+5. `ThresholdBuilderAgent` 가 규정에서 수치 임계값을 추출 (`RuleItem` 리스트)  
+6. `CPMWeatherCostAgent` 가 WBS + 계약정보 + 날씨·공휴일 정보를 이용해 CPM + 지연 분석 수행  
+7. `MergerAgent` 가 위 결과를 통합하고, 필요 시 LLM으로 한국어 요약 카드·테이블을 생성 (`ChatResponse`)  
+8. Frontend 가 `ui.tables`, `ui.cards`, `citations` 를 시각화.
+
+**법규 전용 모드 (`mode="law_only"`)**  
+`frontend/lib/main2.dart` 에서 `mode: "law_only"` 로 `/api/chat` 을 호출하면,  
+`app.py::chat` 이 `required_agents = ["law_rag", "merger"]` 로 강제하여 **CPM 분석 없이** 법규 Q&A만 수행합니다.
+
+---
+
+### 4. 프로젝트 구조 (Project Structure)
+
 
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Frontend      │    │   Backend       │    │   Data Layer    │
-│   (Flutter)     │◄──►│   (FastAPI)     │◄──►│   (FAISS+JSONL) │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-                              │
-                              ▼
-                    ┌─────────────────┐
-                    │   Multi-Agents  │
-                    │                 │
-                    │ • Law RAG       │
-                    │ • Threshold     │
-                    │ • CPM+Weather   │
-                    │ • Merger        │
-                    └─────────────────┘
-```
 
-## Quick Start
+---
 
-### Prerequisites
+### 5. Backend 실행 방법
 
-- Python 3.11+
-- Node.js 18+
-- FAISS index files (provided by another developer)
+#### 5.1 사전 요구 사항
 
-### Backend Setup
+- Python 3.10 이상 (프로젝트는 3.10 기준으로 개발됨)
+- 가상환경 사용 권장 (`venv`)
+- 선택 사항: OpenAI API 키 (LLM 기능 활성화)
 
-1. **Clone and setup environment:**
+#### 5.2 환경 설정
+
 ```bash
-git clone <repository-url>
 cd AI-CPM-project
+
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
+venv\Scripts\activate        # Windows
+# 또는
+source venv/bin/activate     # macOS / Linux
 
-2. **Install dependencies:**
-```bash
 pip install -r requirements.txt
 ```
 
-3. **Configure environment:**
-```bash
-# .env 파일 생성 (자동으로 생성되지 않음)
-cp .env.example .env  # Linux/Mac
-copy .env.example .env  # Windows
-
-# .env 파일 편집 (선택사항 - 기본값으로 개발 가능)
-# - USE_STUB=true (stub 데이터 사용, 실제 API 불필요)
-# - API 키는 나중에 필요할 때 추가
-```
-
-4. **데이터 디렉토리 확인:**
-```bash
-# 디렉토리 구조는 이미 준비되어 있습니다
-# data/faiss/ - FAISS 인덱스 파일 위치 (.gitkeep 파일로 구조 유지)
-# data/rules/ - 추출된 규칙 저장 위치 (.gitkeep 파일로 구조 유지)
-
-# ⚠️ FAISS 인덱스가 없어도 서버는 정상 실행됩니다!
-# FAISS 기능이 필요한 경우:
-#   - index.faiss와 meta.jsonl을 data/faiss/에 배치
-#   - 다른 개발자가 임베딩 파이프라인으로 생성
-```
-
-5. **Run the backend:**
-```bash
-uvicorn backend.app:app --reload
-```
-
-서버가 시작되면 FAISS 인덱스 경고가 표시될 수 있지만 정상입니다.
-
-The API will be available at `http://localhost:8000`
-
-### Frontend Setup
-
-1. **Install dependencies:**
-```bash
-cd frontend
-npm install
-```
-
-2. **Run the frontend:**
-```bash
-npm run dev
-```
-
-The frontend will be available at `http://localhost:3000`
-
-## API Usage
-
-### Setup Contract
+`.env` 파일 생성 및 설정:
 
 ```bash
-curl -X POST "http://localhost:8000/api/setup/contract" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "contract_amount": 20000000000,
-    "ld_rate": 0.0005,
-    "indirect_cost_per_day": 3000000,
-    "start_date": "2025-09-15",
-    "calendar_policy": "5d"
-  }'
+copy env.example.txt .env    # Windows
+# cp env.example.txt .env    # macOS / Linux
 ```
 
-### Analyze Project
+`.env` 주요 항목 (backend/config.py 에서 사용):
+
+- `OPENAI_API_KEY` : LLM 사용 시 필수 (없으면 규칙 기반 fallback)
+- `LLM_MODEL`, `*_MODEL` : 각 에이전트별 모델 이름 (기본값은 `gpt-4o-mini`)
+- `USE_STUB=true` : 외부 날씨/공휴일 API 대신 stub 데이터 사용 (개발 모드 권장)
+- `FAISS_INDEX_PATH`, `FAISS_META_PATH` : 법규 RAG 인덱스 위치
+
+#### 5.3 백엔드 서버 실행
 
 ```bash
-curl -X POST "http://localhost:8000/api/chat" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "message": "비 예보 반영해서 다시 짜줘",
-    "wbs_text": "A: 토공 5일, 선행 없음, 유형 EARTHWORK\nB: 콘크리트 3일, 선행 A(FS), 유형 CONCRETE"
-  }'
+venv\Scripts\activate
+uvicorn backend.app:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### Refresh Rules
+- 브라우저에서 `http://localhost:8000/docs` 접속 시 자동 API 문서(Swagger UI)를 확인할 수 있습니다.
+- 모바일·다른 PC에서 접근할 때는 `http://<PC_IP>:8000` 형태로 접속합니다.
+
+---
+
+### 6. Frontend 실행 방법 (Flutter Web & Mobile)
+
+#### 6.1 사전 요구 사항
+
+- Flutter SDK (stable 채널)
+- Android Studio / Xcode (모바일 빌드 시)
+- Chrome 브라우저 (웹 실행 시)
+
+#### 6.2 의존성 설치
 
 ```bash
-curl -X POST "http://localhost:8000/api/rules/refresh"
+cd AI-CPM-project/frontend
+flutter pub get
 ```
 
-### Prompt Management
+#### 6.3 웹에서 실행 (개발 편의용)
 
 ```bash
-# Get available prompts
-curl "http://localhost:8000/api/prompts"
-
-# Get specific prompt
-curl "http://localhost:8000/api/prompts/law_rag_system"
-
-# Get agent status with prompts
-curl "http://localhost:8000/api/agents/status"
+cd AI-CPM-project/frontend
+flutter run -d chrome -t lib/home.dart
 ```
 
-## WBS Format
+#### 6.4 모바일 디바이스에서 실행 (예: Android)
 
-The system accepts natural language WBS descriptions:
+1. 휴대폰에서 개발자 모드 + USB 디버깅 활성화 후 PC와 연결  
+2. 디바이스 확인:
+   ```bash
+   flutter devices
+   ```
+3. 실행:
+   ```bash
+   flutter run -d <device_id> -t lib/home.dart
+   ```
 
-```
-A: 토공 굴착, 5일, 선행 없음, 유형 EARTHWORK
-B: 기초 콘크리트, 3일, 선행 A(FS), 유형 CONCRETE
-C: 타워크레인 설치, 2일, 선행 A(SS+1), 유형 CRANE
-D: 철골 설치, 4일, 선행 B(FS), C(FS), 유형 STEEL
-```
+#### 6.5 Backend 주소 설정
 
-### Supported Predecessor Types:
-- `FS`: Finish-to-Start (default)
-- `SS`: Start-to-Start
-- `FF`: Finish-to-Finish
-- `SF`: Start-to-Finish
+모바일 디바이스에서 백엔드에 접속할 때는 `127.0.0.1` 대신 **PC의 IP 주소**를 사용해야 합니다.  
+예: PC `ipconfig` 결과가 `IPv4 주소 192.168.0.2` 인 경우:
 
-### Supported Work Types:
-- `EARTHWORK`: 토공, 굴착
-- `CONCRETE`: 콘크리트, 타설
-- `CRANE`: 크레인, 타워크레인
-- `STEEL`: 철골, 강재
-- `ELECTRICAL`: 전기, 배선
-- `PLUMBING`: 배관, 상하수도
-- `FINISHING`: 마감, 마무리
+```dart
+// frontend/lib/main.dart
+static const String _backendBaseUrl = '<ipconfig wifi>';
 
-## Configuration
-
-### Environment Variables
-
-```bash
-# OpenAI Configuration (Required for LLM features)
-OPENAI_API_KEY=your_openai_api_key_here
-
-# LLM Model Settings
-LLM_MODEL=gpt-4o-mini  # Options: gpt-4o-mini, gpt-4, gpt-3.5-turbo
-LLM_TEMPERATURE=0.7
-LLM_MAX_TOKENS=2000
-
-# Embeddings (Optional - for FAISS)
-USE_OPENAI_EMBEDDINGS=false
-
-# FAISS Configuration
-FAISS_INDEX_PATH=./data/faiss/index.faiss
-FAISS_META_PATH=./data/faiss/meta.jsonl
-FAISS_TOP_K=5
-
-# API Endpoints (placeholders)
-KMA_ENDPOINT=<KMA_ENDPOINT>
-KMA_API_KEY=
-HOLIDAY_ENDPOINT=<HOLIDAY_ENDPOINT>
-HOLIDAY_API_KEY=
-
-# Development
-USE_STUB=true
-CURRENCY=KRW
+// frontend/lib/main2.dart
+static const String _backendBaseUrl = '<ipconfig wifi>';
 ```
 
-**⚠️ Important**: You need an OpenAI API key for LLM features. Get one at https://platform.openai.com/api-keys
+PC와 모바일이 같은 Wi‑Fi 에 있고, 윈도우 방화벽에서 8000 포트가 허용되어 있어야 합니다.
 
-If no API key is provided:
-- Supervisor falls back to regex-based routing
-- Law RAG returns raw FAISS results without interpretation
-- CPM Agent uses rule-based recommendations
-- Merger skips natural language summary
+---
 
-## Testing
+### 7. 에이전트 및 도구 상세 설명
 
-### 자동화된 테스트
+#### 7.1 Supervisor (`backend/supervisor.py`)
 
-Run the test suite:
+- 역할: 사용자의 한국어 질의를 분석해 어떤 에이전트를 호출할지 결정하는 **의도 라우터**입니다.
+- LLM 기반 라우팅:
+  - `supervisor_system.txt` 프롬프트와 OpenAI 모델을 사용해 JSON 형식의 라우팅 결과를 생성합니다.
+  - 출력: `required_agents`, `analysis_mode`, `forecast_offset_days`, `forecast_duration_days` 등.
+- Regex 기반 fallback:
+  - LLM이 없을 경우, 미리 정의된 정규식 패턴으로 `law_regulation`, `schedule`, `weather`, `cost` 등의 의도를 감지합니다.
 
-```bash
-# Backend tests
-pytest tests/
+#### 7.2 WBSParser (`backend/tools/services/wbs_parser.py`)
 
-# Specific test files
-pytest tests/test_faiss_store.py
-pytest tests/test_wbs_parser.py
-pytest tests/test_agents.py
-```
+- 입력: `wbs_text` (WBS 라인 형식 또는 완전 자연어 서술)
+- 단계:
+  1. 규칙 기반 파서로 `A: 작업명, 5일, 선행 없음, 유형 EARTHWORK` 형식을 우선 파싱
+  2. 실패 시 LLM(`wbs_parser_query.txt`)을 사용해 JSON 배열 형태의 `WBSItem` 리스트 생성
+  3. 마지막으로 간단한 휴리스틱 파서로 자연어 텍스트에서 “작업명 + N일” 패턴을 추출
+- 출력: `List[WBSItem]` (id, name, duration, predecessors, work_type)
 
-### API 테스트 도구들
+#### 7.3 LawRAGAgent (`backend/agents/law_rag.py`)
 
-서버가 실행 중일 때 다양한 방법으로 API를 테스트할 수 있습니다:
+- RAG 파이프라인:
+  1. `get_query_prompt("law_rag", ...)` 로 검색 질의 포맷팅
+  2. `RagStoreFaiss` 로 FAISS 인덱스에서 k개 스니펫 검색
+  3. `Citation` 모델로 정규화 (document, page, snippet, score)
+  4. LLM 사용 가능 시, 규정 스니펫을 요약·정제해 더 읽기 쉬운 텍스트 생성
+- Fallback 모드:
+  - FAISS 인덱스가 없거나 LLM이 비활성화된 경우, 내장된 예시 규정을 기반으로 기본적인 안전 기준을 제공합니다.
 
-#### 1. **FastAPI 자동 문서 (가장 추천!)**
+#### 7.4 ThresholdBuilderAgent (`backend/agents/threshold_builder.py`)
 
-서버 실행 후 브라우저에서 접속:
-```
-http://localhost:8000/docs        # Swagger UI (대화형 API 문서)
-http://localhost:8000/redoc       # ReDoc (API 레퍼런스)
-```
+- LawRAGAgent가 가져온 텍스트에서 **풍속, 온도, 강우량, 작업중지 기준** 등의 수치를 추출합니다.
+- 규칙 기반/간단한 패턴 매칭으로 `RuleItem` 리스트를 생성하고, `RulesStore` 에 저장할 수 있습니다.
 
-#### 2. **웹 테스트 대시보드**
+#### 7.5 CPMWeatherCostAgent (`backend/agents/cpm_weather_cost.py`)
 
-간단한 HTML 대시보드로 테스트:
-```bash
-# test_dashboard.html 파일을 브라우저에서 열기
-# 또는 간단한 서버로 실행:
-python -m http.server 3001
-# 그 후 http://localhost:3001/test_dashboard.html 접속
-```
+- 입력: `wbs_json`(WBSItem 리스트), `contract_data`, `rules`
+- 주요 기능:
+  - `CPMService` 를 사용해 **이상 일정(ideal_schedule)** 을 계산 (ES/EF/LS/LF/TF, 임계경로 등)
+  - `WeatherService`, `HolidayService` 를 통해 특정 기간의 **날씨 부적합일·공휴일**을 계산
+  - 이를 바탕으로 총 지연일, 날씨 지연·공휴일 지연, 지연 일자별 상세 `DelayRow` 리스트를 생성
+  - LLM 사용 시, 지연 분석을 바탕으로 일정 단축·리스크 완화에 대한 권장사항을 자연어로 생성
 
-기능:
-- ✅ 서버 상태 실시간 확인
-- ✅ 프롬프트 조회 및 확인
-- ✅ 채팅 테스트 (WBS 포함)
-- ✅ 에이전트 상태 모니터링
-- ✅ 예제 질문 템플릿 제공
+#### 7.6 MergerAgent (`backend/agents/merger.py`)
 
-#### 3. **Python 테스트 스크립트**
+- 역할: 다양한 에이전트 결과(`law_rag`, `threshold_builder`, `cpm_weather_cost`)를 모아 **단일 `ChatResponse`** 로 합칩니다.
+- 구성 요소:
+  - `citations`: 법규 RAG 결과 상위 N개
+  - `ideal_schedule`, `delay_table`: CPM·지연 분석 결과
+  - `ui.tables`: DataTable 렌더링용 표 구조 (`UITable`)
+  - `ui.cards`: KPI·요약을 보여주는 카드 구조 (`UICard`)
+- LLM 요약:
+  - 일정·지연 분석이 있는 경우: “💡 종합 분석” 카드 생성
+  - 법규만 있는 경우(`analysis_mode == "law_only"`): “💡 법규 설명” 카드로 법규 요약 생성
 
-자동화된 API 테스트:
-```bash
-# 서버가 실행 중인 상태에서
-python test_api_client.py
-```
+#### 7.7 기타 서비스·저장소
 
-모든 엔드포인트를 순차적으로 테스트하고 결과를 출력합니다.
+- `WeatherService` (`backend/tools/services/weather.py`)  
+  - `USE_STUB=true` 일 때는 계절·날짜 기반의 결정적 stub 데이터를 생성합니다.
+  - 실제 API를 사용할 수 있도록 `calendar_endpoint` / `kma_endpoint`를 위한 확장 포인트를 제공합니다.
 
-#### 4. **HTTP 파일 (VSCode REST Client)**
+- `HolidayService` (`backend/tools/services/holidays.py`)  
+  - 주말·공휴일을 고려한 비근무일 계산 로직을 제공합니다.
 
-VSCode의 REST Client 확장 사용:
-```bash
-# test_api_examples.http 파일을 VSCode에서 열고
-# "Send Request" 클릭
-```
+- `RulesStore` (`backend/tools/rules/store.py`)  
+  - `RuleItem` 리스트를 `data/rules/rules.jsonl` 에 저장/로드하여, 규정 기반 임계값을 재사용할 수 있게 합니다.
 
-#### 5. **Curl 명령어**
+---
 
-터미널에서 직접 테스트:
-```bash
-# 프롬프트 목록 확인
-curl http://localhost:8000/api/prompts
+### 8. 사용 기술 스택 (Tech Stack)
 
-# 특정 프롬프트 확인
-curl http://localhost:8000/api/prompts/law_rag_system
+#### 8.1 Backend
 
-# 에이전트 상태 확인
-curl http://localhost:8000/api/agents/status
+- **언어/프레임워크**
+  - Python 3.10
+  - FastAPI (비동기 웹 프레임워크)
+  - Uvicorn (ASGI 서버)
+  - Pydantic v2 (데이터 검증 및 모델 정의)
 
-# 채팅 테스트
-curl -X POST "http://localhost:8000/api/chat" \
-  -H "Content-Type: application/json" \
-  -d '{"message": "타워크레인 작업 시 풍속 기준은?"}'
-```
+- **AI/데이터 처리**
+  - `transformers`, `sentence-transformers` (사전학습 언어모델 및 임베딩)
+  - `faiss-cpu` (법규 RAG 인덱스 검색)
+  - `numpy`, `pandas`, `scikit-learn` (기본 수치·데이터 처리)
 
-### 프롬프트 디버깅
+- **구성/유틸리티**
+  - `python-dotenv` (환경변수 관리)
+  - `requests` (외부 API 호출)
+  - `pytest` (테스트)
 
-시스템이 어떤 프롬프트를 사용하는지 확인하려면:
+#### 8.2 LLM / Prompting
 
-```bash
-# 1. 모든 프롬프트 목록
-curl http://localhost:8000/api/prompts
+- OpenAI API (예: `gpt-4o-mini`, `gpt-3.5-turbo`, `gpt-4` 등)
+- 에이전트별 시스템/쿼리 프롬프트 파일 (`prompts/*.txt`)을 통해 역할과 출력을 **프롬프트 드리븐** 방식으로 제어
 
-# 2. 특정 에이전트의 시스템 프롬프트 확인
-curl http://localhost:8000/api/agents/status
+#### 8.3 Frontend (Flutter)
 
-# 3. 프롬프트 파일 직접 확인
-cat prompts/law_rag_system.txt
-```
+- Flutter (Material 3 기반 UI)
+- Dart
+- 주요 패키지:
+  - `http` : 백엔드 REST API 호출
+  - `google_fonts` : Noto Sans KR 폰트
+- 특징:
+  - `lib/home.dart` : 두 기능(일정 분석 / 법규 Q&A)을 선택하는 메인 허브
+  - `lib/main.dart` : 일정 분석 + WBS 입력 + 결과 카드/테이블 스트리밍 렌더링
+  - `lib/main2.dart` : 법규 Q&A 전용 화면, 법규 요약 카드 + 참고 문서 리스트 렌더링
 
-## Project Structure
+#### 8.4 데이터 / 파일 포맷
 
-```
-project/
-├── backend/
-│   ├── app.py                 # FastAPI application
-│   ├── config.py              # Configuration management
-│   ├── supervisor.py          # Intent routing
-│   ├── schemas/
-│   │   └── io.py             # Request/response models
-│   ├── agents/                # AI Agents (Chain execution)
-│   │   ├── law_rag.py        # Law/Regulation RAG agent
-│   │   ├── threshold_builder.py # Threshold extraction agent
-│   │   ├── cpm_weather_cost.py  # CPM+Weather+Cost agent
-│   │   └── merger.py         # Result merger agent
-│   ├── tools/                 # Tools & Services (Used by agents)
-│   │   ├── services/         # Utility services
-│   │   │   ├── wbs_parser.py # WBS parser
-│   │   │   ├── weather.py    # Weather service
-│   │   │   ├── holidays.py   # Holiday service
-│   │   │   ├── cpm.py        # CPM calculation
-│   │   │   └── cost.py       # Cost calculation
-│   │   ├── rag/              # RAG system
-│   │   │   └── faiss_store.py # FAISS store
-│   │   └── rules/            # Rules storage
-│   │       └── store.py      # Rules management
-│   └── utils/
-│       └── prompt_loader.py  # Prompt management utility
-├── frontend/
-│   ├── src/
-│   │   ├── App.tsx           # Main Flutter component
-│   │   ├── main.tsx          # Flutter entry point
-│   │   └── components/
-│   │       └── Tables.tsx    # Table components
-│   ├── package.json
-│   └── vite.config.ts
-├── prompts/                  # Prompt files
-│   ├── law_rag_system.txt    # Law RAG system prompt
-│   ├── law_rag_query.txt     # Law RAG query prompt
-│   ├── threshold_builder_system.txt # Threshold builder system prompt
-│   ├── threshold_builder_extraction.txt # Threshold extraction prompt
-│   ├── cpm_analysis_system.txt # CPM analysis system prompt
-│   ├── cpm_analysis_query.txt # CPM analysis query prompt
-│   ├── merger_system.txt     # Merger system prompt
-│   ├── merger_formatting.txt # Merger formatting prompt
-│   ├── wbs_parser_system.txt # WBS parser system prompt
-│   ├── wbs_parser_query.txt  # WBS parser query prompt
-│   └── supervisor_system.txt # Supervisor system prompt
-├── data/
-│   ├── faiss/                # FAISS index files
-│   └── rules/                # Generated rules
-├── tests/                    # Test files
-├── requirements.txt
-└── README.md
-```
+- 법규 RAG 인덱스: FAISS (`index.faiss`) + 메타데이터 (`meta.jsonl`)
+- 규칙 저장: JSON Lines (`data/rules/rules.jsonl`)
+- LLM 프롬프트: UTF-8 텍스트 (`prompts/*.txt`)
 
-## Agents Overview
-
-### 1. Supervisor (Intent Router)
-- **LLM Mode**: GPT analyzes user intent in natural language → routes to appropriate agents
-- **Fallback**: Regex pattern matching if LLM unavailable
-- **Capability**: Understands complex queries and multi-intent requests
-
-### 2. Law RAG Agent
-- **LLM Mode**: FAISS search → GPT interprets and summarizes regulations for the query
-- **Fallback**: Raw FAISS search results
-- **Capability**: Contextual understanding and relevance filtering
-
-### 3. Threshold Builder Agent
-- **Current**: Regex-based numeric extraction (no LLM needed)
-- **Capability**: Extracts safety thresholds from regulations
-- **Output**: Structured rules (wind speed, temperature, etc.)
-
-### 4. CPM Weather Cost Agent
-- **LLM Mode**: Analyzes weather data → GPT generates intelligent schedule adjustments + actionable recommendations
-- **Fallback**: Rule-based recommendations
-- **Capability**: Understands weather impact context and suggests mitigation strategies
-
-### 5. Merger Agent
-- **LLM Mode**: GPT generates natural language summary of all analysis results
-- **Fallback**: Structured data only
-- **Capability**: Creates executive summary for project managers
-
-## Prompt Management System
-
-The system uses a centralized prompt management system for better maintainability and customization:
-
-### Prompt Files Structure
-- **System Prompts**: Define agent roles and capabilities
-- **Query Prompts**: Format specific queries with variables
-- **Extraction Prompts**: Guide data extraction and parsing
-
-### Customizing Prompts
-1. Edit prompt files in the `prompts/` directory
-2. Use `{variable}` syntax for dynamic content
-3. Restart the application to load changes
-4. Use API endpoints to view current prompts
-
-### Available Prompts
-- `law_rag_system.txt` / `law_rag_query.txt`
-- `threshold_builder_system.txt` / `threshold_builder_extraction.txt`
-- `cpm_analysis_system.txt` / `cpm_analysis_query.txt`
-- `merger_system.txt` / `merger_formatting.txt`
-- `wbs_parser_system.txt` / `wbs_parser_query.txt`
-- `supervisor_system.txt`
-
-## Development Notes
-
-- **🤖 LLM Integration**: OpenAI GPT-4/3.5 integrated across all agents
-- **🔄 Graceful Fallbacks**: System works without LLM (reduced functionality)
-- **⚙️ No Hard-coding**: All configuration through `.env` and `config.py`
-- **🔌 Stub Mode**: Default mode uses stub data for external APIs
-- **📖 Read-only FAISS**: No embedding generation, only search
-- **🧩 Modular Design**: Each agent is independently testable
-- **🛡️ Error Handling**: Graceful fallbacks when services unavailable
-- **📝 Prompt-driven**: All agent behavior controlled by external prompt files
-- **🏗️ Clean Architecture**: Clear separation between agents (business logic) and tools (utilities)
-
-### LLM Integration Details
-
-**When LLM is available (OpenAI API key set):**
-1. **Supervisor**: Natural language understanding for intent routing
-2. **Law RAG**: Contextual interpretation of regulations
-3. **CPM Agent**: Intelligent weather impact analysis and recommendations
-4. **Merger**: Executive summary generation in natural language
-
-**When LLM is unavailable (no API key):**
-1. **Supervisor**: Regex-based pattern matching
-2. **Law RAG**: Raw FAISS search results
-3. **CPM Agent**: Rule-based recommendations
-4. **Merger**: Structured data only (no summary)
-
-**All core functionality (CPM calculation, cost analysis, data processing) works independently of LLM.**
-
-## Troubleshooting
-
-### Clone 후 파일이 없어요!
-**문제**: `.env` 파일이나 데이터 디렉토리가 없습니다
-**해결**:
-```bash
-# 1. .env 파일 생성
-cp .env.example .env  # Linux/Mac
-copy .env.example .env  # Windows
-
-# 2. 데이터 디렉토리는 이미 존재합니다
-# data/faiss/.gitkeep와 data/rules/.gitkeep이 구조를 유지합니다
-
-# 3. FAISS 인덱스가 없어도 서버는 실행됩니다 (USE_STUB=true)
-```
-
-### FAISS Index Not Found
-```
-Warning: FAISS index not found
-```
-**해결**: 
-- 개발 중에는 무시해도 됩니다 (stub 모드 사용)
-- FAISS 검색이 필요한 경우: `index.faiss`와 `meta.jsonl`을 `./data/faiss/`에 배치
-
-### Pydantic RecursionError
-**문제**: Pydantic v2에서 RecursionError 발생
-**해결**: `schemas/io.py`에서 `Field()` 대신 기본값 직접 할당
-
-### NumPy Compatibility Error
-**문제**: FAISS와 NumPy 2.x 호환성 문제
-**해결**: 
-```bash
-pip install "numpy<2.0"
-```
-
-### Frontend Connection Issues
-**해결**: Backend가 8000번 포트에서 실행 중인지 확인
-
-### Import Errors
-**해결**: 가상환경 활성화 및 의존성 설치 확인
-```bash
-source venv/bin/activate  # Linux/Mac
-venv\Scripts\activate  # Windows
-pip install -r requirements.txt
-```
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make changes with tests
-4. Submit a pull request
-
-## License
-
-This project is licensed under the MIT License.
+---

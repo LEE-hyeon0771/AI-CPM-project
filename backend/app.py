@@ -4,7 +4,7 @@ FastAPI application for Smart Construction Scheduling & Economic Analysis.
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 import uvicorn
 
 from .config import get_settings
@@ -45,6 +45,8 @@ threshold_builder = ThresholdBuilderAgent()
 cpm_weather_cost_agent = CPMWeatherCostAgent()
 merger_agent = MergerAgent()
 rules_store = RulesStore()
+# Last parsed WBS for reuse in follow-up chat requests
+last_wbs_json: Optional[List[Any]] = None
 
 
 @app.get("/")
@@ -74,32 +76,94 @@ async def setup_contract(request: ContractSetupRequest):
 async def chat(request: ChatRequest):
     """Main chat endpoint for project analysis."""
     try:
-        # Route intent
+        print(">>> /api/chat called")
+        global last_wbs_json
+
+        # Route intent (includes analysis_mode and forecast options when LLM is used)
         routing = supervisor.route_intent(request.message)
+
+        # frontend에서 명시적으로 법규 전용 모드(law_only)를 요청한 경우,
+        # Supervisor의 판단과 무관하게 law_rag만 실행하도록 라우팅을 강제한다.
+        if getattr(request, "mode", None) == "law_only":
+            routing = {
+                # 법규 검색 + 최종 포맷팅(머지)만 수행
+                "required_agents": ["law_rag", "merger"],
+                "analysis_mode": "law_only",
+                "forecast_offset_days": 0,
+                "forecast_duration_days": None,
+            }
         
-        # Parse WBS if provided
+        # Parse WBS:
+        # 1) 사용자가 wbs_text에 뭔가 적어주면 그걸 최우선으로 파싱
+        # 2) 비어 있으면 직전 요청에서 사용한 WBS를 재사용
+        # 3) 그래도 없고 일정 분석이 필요하면 message 전체에서 자연어 WBS를 LLM/파서로 추출
         wbs_json = None
-        if supervisor.should_parse_wbs(request.wbs_text):
-            wbs_json = wbs_parser.parse_wbs(request.wbs_text)
+        raw_wbs_text = (request.wbs_text or "").strip()
+
+        if raw_wbs_text:
+            # 명시적으로 WBS 텍스트를 준 경우
+            wbs_json = wbs_parser.parse_wbs(raw_wbs_text)
+            last_wbs_json = wbs_json
+        else:
+            # wbs_text를 비워둔 경우
+            if last_wbs_json is not None:
+                # 이전에 파싱해 둔 WBS 재사용 (follow-up 요청)
+                wbs_json = last_wbs_json
+            else:
+                # 첫 요청인데 wbs_text가 비어 있고, 일정/CPM 분석이 필요하다면
+                if "cpm_weather_cost" in routing.get("required_agents", []):
+                    # 자연어로 된 message 전체에서 WBS 추출 시도 (LLM + 규칙 기반)
+                    wbs_json = wbs_parser.parse_wbs(request.message)
+                    if wbs_json:
+                        last_wbs_json = wbs_json
         
         # Execute required agents
         results = {}
         
+        # 1) 법규/안전 규정 검색 (명시적으로 요청된 경우)
         if "law_rag" in routing["required_agents"]:
-            work_types = supervisor.extract_work_types(request.wbs_text or "")
+            work_types_source = request.wbs_text or request.message or ""
+            work_types = supervisor.extract_work_types(work_types_source)
             results["law_rag"] = law_rag_agent.search_regulations(
                 request.message, work_types
             )
         
-        if "threshold_builder" in routing["required_agents"]:
-            if "law_rag" in results:
-                results["threshold_builder"] = threshold_builder.build_rules(
-                    results["law_rag"]
+        # 2) 일정/CPM 분석이 필요한데 법규 검색이 포함되지 않은 경우에도,
+        #    WBS에 등장한 작업 유형 기준으로 관련 안전 규정을 자동으로 검색
+        if "cpm_weather_cost" in routing["required_agents"] and "law_rag" not in results:
+            if wbs_json is not None:
+                work_types_source = request.wbs_text or request.message or ""
+                work_types = supervisor.extract_work_types(work_types_source)
+                results["law_rag"] = law_rag_agent.search_regulations(
+                    "입력된 공사 작업들의 안전 규정과 작업중지 기준을 알려줘.", work_types
                 )
         
+        # 3) Threshold 규칙 생성: law_rag 결과가 있다면 항상 규칙으로 정리
+        if "law_rag" in results:
+            results["threshold_builder"] = threshold_builder.build_rules(
+                results["law_rag"]
+            )
+        
         if "cpm_weather_cost" in routing["required_agents"]:
+            # Forecast control parameters from routing (may be filled by LLM)
+            forecast_offset_days = routing.get("forecast_offset_days", 0)
+            forecast_duration_days = routing.get("forecast_duration_days")
+            analysis_mode = routing.get("analysis_mode", "full")
+
+            # 첫 번째 WBS 기반 분석(새 WBS가 들어온 경우)에서는 이상적인 CPM만 계산하고,
+            # 날씨/공휴일을 반영한 지연 분석은 수행하지 않는다.
+            # 이후 follow-up 요청에서만 weather/holiday 분석을 수행.
+            is_new_wbs = bool(raw_wbs_text)
+            if is_new_wbs:
+                analysis_mode = "initial"
+
             results["cpm_weather_cost"] = cpm_weather_cost_agent.analyze(
-                wbs_json, contract_data, results.get("threshold_builder", [])
+                wbs_json,
+                contract_data,
+                results.get("threshold_builder", []),
+                forecast_offset_days=forecast_offset_days,
+                forecast_duration_days=forecast_duration_days,
+                analysis_mode=analysis_mode,
             )
         
         # Merge results
@@ -111,12 +175,14 @@ async def chat(request: ChatRequest):
         return ChatResponse(
             ideal_schedule={},
             delay_table={},
-            cost_summary={"indirect_cost": 0, "ld": 0, "total": 0},
             citations=[],
             ui={"tables": [], "cards": []}
         )
         
     except Exception as e:
+        # Log full traceback to server console for easier debugging
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -198,7 +198,6 @@ class TestCPMWeatherCostAgent:
         with patch('backend.agents.cpm_weather_cost.CPMService'), \
              patch('backend.agents.cpm_weather_cost.WeatherService'), \
              patch('backend.agents.cpm_weather_cost.HolidayService'), \
-             patch('backend.agents.cpm_weather_cost.CostService'), \
              patch('backend.agents.cpm_weather_cost.RulesStore'):
             
             self.agent = CPMWeatherCostAgent()
@@ -209,7 +208,6 @@ class TestCPMWeatherCostAgent:
         
         assert "ideal_schedule" in result
         assert "delay_analysis" in result
-        assert "cost_analysis" in result
         assert "recommendations" in result
         assert result["ideal_schedule"]["project_duration"] == 0
     
@@ -255,21 +253,14 @@ class TestCPMWeatherCostAgent:
         }
         
         self.agent.holiday_service.get_holiday_impact.return_value = {
-            "non_working_days": 1
-        }
-        
-        self.agent.cost_service.compute_cost.return_value = {
-            "indirect_cost": 2000000,
-            "ld": 500000,
-            "total": 2500000,
-            "breakdown": []
+            "non_working_days": 1,
+            "holiday_count": 0
         }
         
         result = self.agent.analyze(wbs_items, contract_data, [])
         
         assert result["ideal_schedule"]["project_duration"] == 8
         assert result["delay_analysis"]["total_delay_days"] == 3
-        assert result["cost_analysis"]["total"] == 2500000
     
     def test_get_start_date(self):
         """Test start date extraction."""
@@ -314,11 +305,6 @@ class TestMergerAgent:
                 "delay_analysis": {
                     "total_delay_days": 2,
                     "delay_rows": []
-                },
-                "cost_analysis": {
-                    "indirect_cost": 1000000,
-                    "ld": 500000,
-                    "total": 1500000
                 }
             }
         }
@@ -329,7 +315,6 @@ class TestMergerAgent:
         
         assert isinstance(response, ChatResponse)
         assert len(response.citations) == 1
-        assert response.cost_summary.total == 1500000
         assert "tables" in response.ui
         assert "cards" in response.ui
     
@@ -345,20 +330,6 @@ class TestMergerAgent:
         
         assert len(result) == 3
         assert result[0].score == 0.9  # Should be sorted by score
-    
-    def test_build_cost_summary(self):
-        """Test building cost summary."""
-        cost_analysis = {
-            "indirect_cost": 1000000,
-            "ld": 500000,
-            "total": 1500000
-        }
-        
-        result = self.agent._build_cost_summary(cost_analysis)
-        
-        assert result.indirect_cost == 1000000
-        assert result.ld == 500000
-        assert result.total == 1500000
     
     def test_get_agent_status(self):
         """Test get agent status."""

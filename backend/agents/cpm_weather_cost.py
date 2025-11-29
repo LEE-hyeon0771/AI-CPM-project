@@ -1,14 +1,13 @@
 """
-CPM + Weather + Cost Agent for comprehensive project analysis with LLM-based reasoning.
+CPM + Weather Agent for comprehensive project analysis with LLM-based reasoning.
 """
 from typing import List, Dict, Any, Optional
 from datetime import date, timedelta
 import json
-from ..schemas.io import WBSItem, DelayRow, CostSummary
+from ..schemas.io import WBSItem, DelayRow
 from ..tools.services.cpm import CPMService
 from ..tools.services.weather import WeatherService
 from ..tools.services.holidays import HolidayService
-from ..tools.services.cost import CostService
 from ..tools.rules.store import RulesStore
 from ..config import get_settings
 from ..utils.llm_client import get_llm_client
@@ -21,12 +20,19 @@ class CPMWeatherCostAgent:
         self.cpm_service = CPMService()
         self.weather_service = WeatherService()
         self.holiday_service = HolidayService()
-        self.cost_service = CostService()
         self.rules_store = RulesStore()
         self.settings = get_settings()
         self.llm = get_llm_client()
     
-    def analyze(self, wbs_json: List[WBSItem], contract_data: Dict[str, Any], rules: List[Any] = None) -> Dict[str, Any]:
+    def analyze(
+        self,
+        wbs_json: List[WBSItem],
+        contract_data: Dict[str, Any],
+        rules: List[Any] = None,
+        forecast_offset_days: int = 0,
+        forecast_duration_days: Optional[int] = None,
+        analysis_mode: str = "full",
+    ) -> Dict[str, Any]:
         """
         Perform comprehensive project analysis.
         
@@ -36,7 +42,7 @@ class CPMWeatherCostAgent:
             rules: Extracted rules from threshold builder
             
         Returns:
-            Analysis results including CPM, weather impact, and costs
+            Analysis results including CPM and weather/holiday impact
         """
         if not wbs_json:
             return self._get_empty_analysis()
@@ -50,25 +56,39 @@ class CPMWeatherCostAgent:
         else:
             wbs_items = []
         
-        # Calculate ideal CPM schedule
+        # Calculate ideal CPM schedule (baseline, without delays)
         start_date = self._get_start_date(contract_data)
         ideal_schedule = self.cpm_service.compute_cpm(wbs_items, start_date)
         
-        # Simulate delays based on weather and rules
-        delay_analysis = self._simulate_delays(ideal_schedule, wbs_items, start_date)
+        # Determine forecast window for weather/holiday impact
+        # analysis_mode:
+        # - "initial": 이상적인 CPM만 계산 (날씨/공휴일 API 호출 없음)
+        # - "full" 또는 "reforecast": 날씨/공휴일을 반영한 지연 분석 수행
+        if forecast_offset_days is None:
+            forecast_offset_days = 0
+        forecast_start_date = start_date + timedelta(days=forecast_offset_days)
         
-        # Calculate costs
-        cost_analysis = self._calculate_costs(delay_analysis, contract_data)
+        # Simulate delays based on weather and holidays in the chosen window
+        if analysis_mode == "initial":
+            delay_analysis = self._build_zero_delay_analysis(ideal_schedule)
+        else:
+            delay_analysis = self._simulate_delays(
+                ideal_schedule,
+                wbs_items,
+                start_date,
+                forecast_start_date=forecast_start_date,
+                forecast_duration_days=forecast_duration_days,
+            )
         
         # Generate recommendations
-        recommendations = self._generate_recommendations(delay_analysis, cost_analysis)
+        recommendations = self._generate_recommendations(delay_analysis)
         
         return {
             "ideal_schedule": ideal_schedule,
             "delay_analysis": delay_analysis,
-            "cost_analysis": cost_analysis,
             "recommendations": recommendations,
-            "analysis_timestamp": date.today().isoformat()
+            "analysis_timestamp": date.today().isoformat(),
+            "analysis_mode": analysis_mode,
         }
     
     def _get_start_date(self, contract_data: Dict[str, Any]) -> date:
@@ -81,18 +101,33 @@ class CPMWeatherCostAgent:
         
         return date.today()
     
-    def _simulate_delays(self, ideal_schedule: Dict[str, Any], wbs_items: List[WBSItem], start_date: date) -> Dict[str, Any]:
+    def _simulate_delays(
+        self,
+        ideal_schedule: Dict[str, Any],
+        wbs_items: List[WBSItem],
+        start_date: date,
+        forecast_start_date: Optional[date] = None,
+        forecast_duration_days: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """Simulate delays based on weather and safety rules."""
         project_duration = ideal_schedule.get("project_duration", 0)
-        end_date = start_date + timedelta(days=project_duration)
+
+        # Determine forecast window
+        if forecast_start_date is None:
+            forecast_start_date = start_date
+
+        if forecast_duration_days is not None and forecast_duration_days > 0:
+            end_date = forecast_start_date + timedelta(days=forecast_duration_days - 1)
+        else:
+            end_date = start_date + timedelta(days=project_duration)
         
         # Get weather forecast
-        weather_forecast = self.weather_service.get_weather_forecast(start_date, end_date)
+        weather_forecast = self.weather_service.get_weather_forecast(forecast_start_date, end_date)
         weather_impact = self.weather_service.get_construction_impact(weather_forecast)
         
         # Get holiday impact
         calendar_policy = "5d"  # Default
-        holiday_impact = self.holiday_service.get_holiday_impact(start_date, end_date, calendar_policy)
+        holiday_impact = self.holiday_service.get_holiday_impact(forecast_start_date, end_date, calendar_policy)
         
         # Calculate total delays
         weather_delays = weather_impact["unsuitable_days"]
@@ -139,50 +174,34 @@ class CPMWeatherCostAgent:
         
         return affected_tasks
     
-    def _calculate_costs(self, delay_analysis: Dict[str, Any], contract_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Calculate additional costs due to delays."""
-        delay_days = delay_analysis.get("total_delay_days", 0)
-        
-        if delay_days <= 0:
-            return {
-                "indirect_cost": 0.0,
-                "ld": 0.0,
-                "total": 0.0,
-                "breakdown": [],
-                "daily_costs": []
-            }
-        
-        # Calculate costs
-        cost_summary = self.cost_service.compute_cost(delay_days, contract_data)
-        daily_costs = self.cost_service.compute_daily_costs(delay_days, contract_data)
-        
+    def _build_zero_delay_analysis(self, ideal_schedule: Dict[str, Any]) -> Dict[str, Any]:
+        """Build delay analysis dict with no delays (used for initial CPM only)."""
+        project_duration = ideal_schedule.get("project_duration", 0)
         return {
-            "indirect_cost": cost_summary["indirect_cost"],
-            "ld": cost_summary["ld"],
-            "total": cost_summary["total"],
-            "breakdown": cost_summary["breakdown"],
-            "daily_costs": daily_costs,
-            "delay_days": delay_days
+            "total_delay_days": 0,
+            "weather_delays": 0,
+            "holiday_delays": 0,
+            "delay_rows": [],
+            "weather_forecast": {},
+            "holiday_impact": {},
+            "new_project_duration": project_duration,
         }
     
-    def _generate_recommendations(self, delay_analysis: Dict[str, Any], cost_analysis: Dict[str, Any]) -> List[str]:
+    def _generate_recommendations(self, delay_analysis: Dict[str, Any]) -> List[str]:
         """Generate recommendations based on analysis with LLM reasoning."""
         # Try LLM-based recommendations first
         if self.llm.is_available():
-            return self._llm_generate_recommendations(delay_analysis, cost_analysis)
+            return self._llm_generate_recommendations(delay_analysis)
         
         # Fallback to rule-based recommendations
-        return self._rule_based_recommendations(delay_analysis, cost_analysis)
+        return self._rule_based_recommendations(delay_analysis)
     
-    def _llm_generate_recommendations(self, delay_analysis: Dict[str, Any], cost_analysis: Dict[str, Any]) -> List[str]:
+    def _llm_generate_recommendations(self, delay_analysis: Dict[str, Any]) -> List[str]:
         """Use LLM to generate intelligent recommendations."""
         try:
             delay_days = delay_analysis.get("total_delay_days", 0)
             weather_delays = delay_analysis.get("weather_delays", 0)
             holiday_delays = delay_analysis.get("holiday_delays", 0)
-            total_cost = cost_analysis.get("total", 0)
-            indirect_cost = cost_analysis.get("indirect_cost", 0)
-            ld_cost = cost_analysis.get("ld", 0)
             
             # Get weather forecast details
             weather_forecast = delay_analysis.get("weather_forecast", {})
@@ -193,9 +212,6 @@ class CPMWeatherCostAgent:
 - 총 지연일: {delay_days}일
   - 기상 지연: {weather_delays}일
   - 공휴일 지연: {holiday_delays}일
-- 추가 비용: {total_cost:,.0f}원
-  - 간접비: {indirect_cost:,.0f}원
-  - 지연손해금: {ld_cost:,.0f}원
 
 주요 지연 사유:"""
             
@@ -208,9 +224,9 @@ class CPMWeatherCostAgent:
             prompt = f"""{context}
 
 위 분석 결과를 바탕으로 프로젝트 관리자에게 다음을 제공하세요:
-1. 핵심 리스크 요약 (1-2줄)
+1. 핵심 일정/지연 리스크 요약 (1-2줄)
 2. 구체적인 대응 방안 3-5가지
-3. 비용 절감 또는 일정 단축 아이디어
+3. 일정 단축 또는 지연 최소화 아이디어
 
 명확하고 실행 가능한 권장사항을 제시하세요."""
 
@@ -226,22 +242,20 @@ class CPMWeatherCostAgent:
             # Parse response into list of recommendations
             recommendations = [line.strip() for line in response.split("\n") if line.strip()]
             
-            return recommendations if recommendations else self._rule_based_recommendations(delay_analysis, cost_analysis)
+            return recommendations if recommendations else self._rule_based_recommendations(delay_analysis)
             
         except Exception as e:
             print(f"LLM recommendation error: {e}")
-            return self._rule_based_recommendations(delay_analysis, cost_analysis)
+            return self._rule_based_recommendations(delay_analysis)
     
-    def _rule_based_recommendations(self, delay_analysis: Dict[str, Any], cost_analysis: Dict[str, Any]) -> List[str]:
+    def _rule_based_recommendations(self, delay_analysis: Dict[str, Any]) -> List[str]:
         """Fallback rule-based recommendations."""
         recommendations = []
         
         delay_days = delay_analysis.get("total_delay_days", 0)
-        total_cost = cost_analysis.get("total", 0)
         
         if delay_days > 0:
             recommendations.append(f"프로젝트 지연 예상: {delay_days}일")
-            recommendations.append(f"추가 비용 예상: {self.settings.currency} {total_cost:,.0f}")
             
             if delay_days > 30:
                 recommendations.append("장기 지연 예상 - 긴급 대응 방안 수립 필요")
@@ -252,10 +266,6 @@ class CPMWeatherCostAgent:
             weather_delays = delay_analysis.get("weather_delays", 0)
             if weather_delays > 0:
                 recommendations.append("기상 조건으로 인한 지연 예상 - 실내 작업 계획 수립")
-            
-            # Cost-specific recommendations
-            if total_cost > 100000000:  # 1억원 이상
-                recommendations.append("높은 추가 비용 예상 - 가속화 방안 검토 필요")
         
         else:
             recommendations.append("현재 일정으로 진행 가능")
@@ -273,13 +283,6 @@ class CPMWeatherCostAgent:
                 "delay_rows": [],
                 "new_project_duration": 0
             },
-            "cost_analysis": {
-                "indirect_cost": 0.0,
-                "ld": 0.0,
-                "total": 0.0,
-                "breakdown": [],
-                "daily_costs": []
-            },
             "recommendations": ["WBS 정보가 필요합니다"],
             "analysis_timestamp": date.today().isoformat()
         }
@@ -291,14 +294,12 @@ class CPMWeatherCostAgent:
             "capabilities": [
                 "cpm_analysis",
                 "weather_impact_analysis",
-                "cost_calculation",
                 "delay_simulation",
                 "recommendation_generation"
             ],
             "services": {
                 "cpm": "CPMService",
                 "weather": "WeatherService", 
-                "holidays": "HolidayService",
-                "cost": "CostService"
+                "holidays": "HolidayService"
             }
         }
