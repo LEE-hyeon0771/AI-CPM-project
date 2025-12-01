@@ -29,8 +29,10 @@ class HolidayService:
             return self.holiday_cache[year]
         
         if self.settings.use_stub:
+            print(f"[HolidayService] Using STUB holidays for year {year}")
             holidays = self._get_stub_holidays(year)
         else:
+            print(f"[HolidayService] Using Nager.Date holidays for year {year}")
             holidays = self._call_holiday_api(year)
         
         self.holiday_cache[year] = holidays
@@ -94,34 +96,30 @@ class HolidayService:
         return holidays
     
     def _call_holiday_api(self, year: int) -> Set[date]:
-        """Call external holiday API (정부 공휴일 API 또는 통합 캘린더 API).
+        """Nager.Date Public Holidays API를 사용해 해당 연도 한국 공휴일을 조회한다.
 
-        CALENDAR_ENDPOINT가 설정되어 있으면 그 주소를, 아니면 HOLIDAY_ENDPOINT를 사용합니다.
-        실제 정부 API 스펙에 맞게 params와 응답 매핑 부분만 수정해서 쓰면 됩니다.
+        - 엔드포인트: https://date.nager.at/api/v3/PublicHolidays/{year}/KR
+        - 인증키가 필요 없으므로, 별도의 환경 설정 없이 바로 사용할 수 있다.
         """
-        base_url = self.settings.calendar_endpoint or self.settings.holiday_endpoint
-        if not base_url or base_url.startswith("<"):
-            # 설정이 안 되어 있으면 안전하게 스텁으로 fallback
-            return self._get_stub_holidays(year)
+        url = f"https://date.nager.at/api/v3/PublicHolidays/{year}/KR"
+        print(f"[HolidayService] Nager.Date URL: {url}")
 
-        params = {
-            "type": "holiday",  # 통합 API라면 타입 구분용
-            "year": year,
-            "api_key": self.settings.holiday_api_key,
-        }
-
-        resp = requests.get(base_url, params=params, timeout=10)
+        resp = requests.get(url, timeout=10)
         resp.raise_for_status()
         data = resp.json()
 
-        # data 예시 형태를 {"holidays": ["2025-01-01", ...]} 로 가정
-        # 실제 응답 포맷에 맞게 date.fromisoformat(...) 부분만 조정해서 사용하세요.
         holidays: Set[date] = set()
-        for d in data.get("holidays", []):
+        for item in data:
+            d_str = item.get("date")  # "YYYY-MM-DD"
             try:
-                holidays.add(date.fromisoformat(d))
+                holidays.add(date.fromisoformat(d_str))
             except Exception:
                 continue
+
+        # API 문제로 아무 것도 못 가져왔으면 stub 으로 대체
+        if not holidays:
+            print(f"[HolidayService] No holidays returned from API for year {year}, falling back to stub.")
+            return self._get_stub_holidays(year)
 
         return holidays
     

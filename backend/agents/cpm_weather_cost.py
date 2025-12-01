@@ -112,27 +112,64 @@ class CPMWeatherCostAgent:
         """Simulate delays based on weather and safety rules."""
         project_duration = ideal_schedule.get("project_duration", 0)
 
-        # Determine forecast window
+        # ------------------------------
+        # 1) 날씨 예보 창 (weather window)
+        # ------------------------------
+        # - forecast_start_date: 예보 시작일 (기본은 공사 시작일)
+        # - forecast_duration_days: 예보 일수 (예: "일주일 후 날씨 반영" → 7일)
+        #   * None 또는 0/음수인 경우: 기본적으로 min(프로젝트 기간, 7일)을 사용
         if forecast_start_date is None:
             forecast_start_date = start_date
 
         if forecast_duration_days is not None and forecast_duration_days > 0:
-            end_date = forecast_start_date + timedelta(days=forecast_duration_days - 1)
+            weather_end_date = forecast_start_date + timedelta(days=forecast_duration_days - 1)
         else:
-            end_date = start_date + timedelta(days=project_duration)
-        
-        # Get weather forecast
-        weather_forecast = self.weather_service.get_weather_forecast(forecast_start_date, end_date)
+            default_window = max(1, min(project_duration, 7))
+            weather_end_date = forecast_start_date + timedelta(days=default_window - 1)
+
+        # Get weather forecast only for the chosen weather window
+        weather_forecast = self.weather_service.get_weather_forecast(forecast_start_date, weather_end_date)
         weather_impact = self.weather_service.get_construction_impact(weather_forecast)
         
-        # Get holiday impact
-        calendar_policy = "5d"  # Default
-        holiday_impact = self.holiday_service.get_holiday_impact(forecast_start_date, end_date, calendar_policy)
+        # ------------------------------
+        # 2) 공휴일 + 주말 영향 (holiday/weekend)
+        # ------------------------------
+        # 사용자가 원하는 의미에 맞춰, 공휴일/주말은
+        # "전체 공사 기간(start_date ~ start_date+project_duration-1)" 기준으로 계산한다.
+        calendar_policy = "5d"  # Default (월~금 근무)
+        full_project_end = start_date + timedelta(days=project_duration - 1) if project_duration > 0 else start_date
+        holiday_impact = self.holiday_service.get_holiday_impact(start_date, full_project_end, calendar_policy)
         
         # Calculate total delays
-        weather_delays = weather_impact["unsuitable_days"]
+        # 1) 날씨로 인해 "실제로 작업을 못 하는 날"만 카운트하기 위해
+        #    주말/공휴일(어차피 비근무일)과 겹치는 날짜는 weather 지연에서 제외한다.
+        bad_weather_dates = {
+            date.fromisoformat(day["date"])
+            for day in weather_forecast["days"]
+            if not day["construction_suitable"]
+        }
+
+        # non-working days (weekend + holidays) 집합 구성
+        holidays_set = {
+            date.fromisoformat(d)
+            for d in holiday_impact.get("holidays", [])
+        }
+        non_working_dates = set()
+        current = start_date
+        while current <= full_project_end:
+            is_weekend = current.weekday() >= 5  # 토(5), 일(6)
+            is_holiday = current in holidays_set
+            if is_weekend or is_holiday:
+                non_working_dates.add(current)
+            current += timedelta(days=1)
+
+        # 날씨-only 지연일: 비가 오지만 근무일인 날만 카운트
+        weather_only_dates = {d for d in bad_weather_dates if d not in non_working_dates}
+        weather_delays = len(weather_only_dates)
+
+        # 주말/공휴일 지연일: 기존 로직 유지 (비근무일 - 법정 공휴일 수)
         holiday_delays = holiday_impact["non_working_days"] - holiday_impact["holiday_count"]
-        
+
         total_delays = weather_delays + holiday_delays
         
         # Generate delay rows
