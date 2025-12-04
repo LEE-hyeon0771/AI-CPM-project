@@ -414,6 +414,11 @@ class MergerAgent:
         if analysis_mode != "initial":
             # Holiday impact
             holiday_delays = delay_analysis.get("holiday_delays", 0)
+            # 날씨 영향 세부 수치
+            weather_delays = delay_analysis.get("weather_delays", 0)
+            weather_total_bad_days = delay_analysis.get("weather_total_bad_days", weather_delays)
+            weather_overlap_nonworking = delay_analysis.get("weather_overlap_nonworking", 0)
+
             cards.append(UICard(
                 title="공휴일 지연",
                 value=f"{holiday_delays}일",
@@ -421,11 +426,16 @@ class MergerAgent:
             ))
             
             # Weather impact
-            weather_delays = delay_analysis.get("weather_delays", 0)
+            weather_subtitle_parts = [f"예상 기상 조건 불량일 {weather_total_bad_days}일"]
+            if weather_overlap_nonworking > 0:
+                weather_subtitle_parts.append(
+                    f"(이 중 {weather_overlap_nonworking}일은 주말/공휴일과 겹쳐 추가 지연 없음)"
+                )
+
             cards.append(UICard(
                 title="날씨 지연",
                 value=f"{weather_delays}일",
-                subtitle="예상 기상 조건 불량일"
+                subtitle="; ".join(weather_subtitle_parts)
             ))
         
         # Critical path

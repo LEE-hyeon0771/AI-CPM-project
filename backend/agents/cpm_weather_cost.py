@@ -166,6 +166,8 @@ class CPMWeatherCostAgent:
         # 날씨-only 지연일: 비가 오지만 근무일인 날만 카운트
         weather_only_dates = {d for d in bad_weather_dates if d not in non_working_dates}
         weather_delays = len(weather_only_dates)
+        weather_total_bad_days = len(bad_weather_dates)
+        weather_overlap_nonworking = len(bad_weather_dates & non_working_dates)
 
         # 주말/공휴일 지연일: 기존 로직 유지 (비근무일 - 법정 공휴일 수)
         holiday_delays = holiday_impact["non_working_days"] - holiday_impact["holiday_count"]
@@ -193,6 +195,8 @@ class CPMWeatherCostAgent:
         return {
             "total_delay_days": total_delays,
             "weather_delays": weather_delays,
+            "weather_total_bad_days": weather_total_bad_days,
+            "weather_overlap_nonworking": weather_overlap_nonworking,
             "holiday_delays": holiday_delays,
             "delay_rows": delay_rows,
             "weather_forecast": weather_forecast,
