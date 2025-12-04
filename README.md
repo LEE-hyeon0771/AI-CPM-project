@@ -304,9 +304,144 @@ PC와 모바일이 같은 Wi‑Fi 에 있고, 윈도우 방화벽에서 8000 포
 
 ---
 
-### 8. 사용 기술 스택 (Tech Stack)
+### 8. LLM-as-Judge 기반 로직 검증
 
-#### 8.1 Backend
+이 프로젝트는 LLM을 “답 생성기”로만 쓰지 않고,  
+**CPM + 날씨 + 공휴일 지연 계산 로직 자체를 평가하는 심판(judge)** 로도 활용합니다.
+
+#### 8.1 평가 목적
+
+- **수작업 검증 부담 완화**: 주말/공휴일과 악천후가 복잡하게 겹치는 다양한 시나리오에서  
+  사람이 모든 케이스를 직접 계산하기 어렵기 때문에, LLM을 이용해 로직의 타당성을 반복적으로 점검합니다.
+- **논문·보고서용 정성 평가**: 비전공자(예: 건설관리 전공 교수)를 대상으로,  
+  “현재 지연 계산 로직이 어떤 관점에서 합리적인지/어디가 한계인지”를 **설명형 리포트**로 자동 생성합니다.
+
+#### 8.2 Judge 아키텍처
+
+- `backend/utils/llm_client.py`
+  - OpenAI API 래퍼 (`LLMClient`) 로, 전체 에이전트에서 공통으로 사용합니다.
+- `backend/utils/llm_judge.py`
+  - LLM-as-judge 전용 유틸리티.
+  - `build_cpm_judge_prompt(...)`:  
+    - 비즈니스 규칙(사람이 정의한 지연 계산 규칙)  
+    - 실제 Python 코드 스니펫 (`CPMWeatherCostAgent._simulate_delays` 일부)  
+    - 입력 시나리오(`scenario_inputs`)와 코드 출력(`scenario_outputs`)  
+    - Python이 미리 계산한 캘린더 facts (`calendar_facts`)  
+    를 하나의 심판용 프롬프트로 구성합니다.
+  - `run_cpm_llm_judge(...)`: 위 프롬프트를 LLM에 전달해 평가 리포트를 가져오는 함수입니다.
+- `backend/scripts/run_llm_judge_example.py`
+  - 예시 스크립트. 가상의 CPM·날씨·공휴일 시나리오를 정의하고  
+    `CPMWeatherCostAgent._simulate_delays(...)` 로 지연 분석을 수행한 뒤,  
+    그 결과를 LLM judge 에 전달하여 **텍스트 리포트 + CSV/텍스트 로그**를 생성합니다.
+
+#### 8.3 평가 기준 (비즈니스 규칙 요약)
+
+Judge 프롬프트에는 사람이 정의한 일정/지연 규칙이 자연어로 주입됩니다. 핵심은 다음과 같습니다.
+
+- **공사 기간**
+  - `start_date` 기준으로 `project_duration` 일 동안 진행.
+
+- **공휴일/주말 지연 (`holiday_delays`)**
+  - 전체 공사 기간(start_date ~ start_date + project_duration − 1)을 달력으로 펼쳐,  
+    토요일·일요일·법정 공휴일을 비근무일로 봅니다.
+  - `holiday_delays = 비근무일(주말+공휴일) 개수 − 법정 공휴일 개수`  
+    → 실질적으로 “주말 개수”에 해당.
+
+- **날씨 지연 (`weather_delays`, 위험 기반 해석)**
+  - `weather_forecast["days"]` 중 `construction_suitable == False` 인 날을 기상 불량일로 정의.
+  - 기상 불량일은 **그날 실제 작업 여부와 무관하게**,  
+    장비 안전 점검, 자재 이동 지연, 후속 공정 순서 변경 등으로  
+    전체 일정 여유(buffer)를 줄이는 **위험일(risk day)** 로 간주합니다.
+  - 따라서 **주말/공휴일(비근무일)에 발생한 기상 불량도 weather_delays 에 포함**됩니다.
+  - 수식: `weather_delays = 기상 불량일 개수 = |bad_weather_dates|`.
+
+- **최종 지연 및 공기**
+  - `total_delay_days = holiday_delays + weather_delays`
+  - `new_project_duration = project_duration + total_delay_days`
+
+이 규칙은 `backend/scripts/run_llm_judge_example.py` 의 `build_business_rules()` 에 정의되어 있으며,  
+그대로 Judge 시스템 프롬프트에 삽입됩니다.
+
+#### 8.4 캘린더 팩트 고정 (weekend/holiday 사실값)
+
+LLM이 달력을 다시 세다가 실수하지 않도록, **주말·비근무일 정보는 Python이 먼저 계산해서 제공**합니다.
+
+- `build_calendar_facts(start_date_str, project_duration)`:
+  - 전체 날짜 범위 (`calendar_range`: `[start, end]`)
+  - 주말 날짜 리스트 (`weekend_dates`)
+  - 주말 개수 (`weekend_count`)
+- 이 값은 `scenario_inputs["calendar_facts"]` 로 Judge 에 전달되고,  
+  프롬프트에서 **“이 값들은 이미 신뢰할 수 있는 facts 이므로, 달력을 다시 계산하지 말라”** 고 명시합니다.
+- LLM은 이 facts 와 코드 출력(`holiday_impact["non_working_days"]`, `holiday_count`, `bad_weather_dates` 등)을 이용해  
+  **순수하게 지연 계산 로직만** 검증하게 됩니다.
+
+#### 8.5 Judge 출력 형식 (논문형 리포트 템플릿)
+
+Judge에게는 **7개 섹션의 고정 템플릿**을 따라 답변하도록 요구합니다.
+
+1. **전체 개념 요약**  
+   - 이 시나리오에서 공기 지연을 어떻게 해석하는지,  
+     특히 “비근무일의 기상 악화도 프로젝트 위험을 높이는가?”라는 관점에서 3~6문장으로 설명.
+2. **수학적 계산 단계**  
+   - `holiday_delays`, `weather_delays`, `total_delay_days`, `new_project_duration` 을  
+     주어진 숫자(facts: non_working_days, holiday_count, bad_weather_dates 크기 등)에 따라  
+     단계별로 계산 과정을 보여줌.
+3. **코드 결과와 계산 결과 비교**  
+   - 4개 지표에 대해 “코드 결과 / 규칙 기반 계산 결과 / 일치 여부”를 표로 제시.
+4. **불일치 설명**  
+   - 불일치가 있다면, 어느 수식·단계에서 차이가 나는지와 그 의미(예: 주말 처리, 날씨 해석 차이)를 서술.  
+   - 모두 일치하면 “모든 항목이 규칙과 일치한다”고 명시.
+5. **반복적으로 나타날 수 있는 시나리오**  
+   - 예: 비근무일에만 악천후가 집중되는 경우, 연속된 악천후 기간 등,  
+     이 로직이 특히 중요해지는 대표 시나리오를 1~2개 제시.
+6. **전반적인 판정**  
+   - 한 문장으로, 이 구현이 “규칙 및 현실적인 공정관리 관점에서 전반적으로 타당/부적합”한지 판정.
+7. **정확도 점수**  
+   - 형식: `**점수: X점**` (0~10점, 0점=완전히 잘못됨, 10점=규칙과 완전히 일치).  
+   - 다음 줄에 `- 이유: ...` 형식으로 한 문장 이유를 쉬운 한국어로 설명.
+
+이 구조 덕분에, **이 README (특히 본 섹션)를 그대로 GPT에 붙여넣으면**  
+“모델 평가 및 검증 방법론”에 대한 **논문 형식의 서술**을 상당 부분 자동 생성할 수 있습니다.
+
+#### 8.6 CSV/텍스트 로그 저장
+
+- `run_llm_judge_example.py` 는 Judge 리포트를 콘솔에 출력함과 동시에,  
+  `backend/scripts/llm_judge_results.txt` 에 핵심 정보를 행(row) 단위로 축적합니다.
+- 저장되는 항목 예:
+  - 시나리오 ID, 시작일, 공사 기간
+  - 주말 개수 및 주말 날짜 (`weekend_count`, `weekend_dates`)
+  - 코드가 계산한 `total_delay_days`, `holiday_delays`, `weather_delays`, `new_project_duration`
+  - Judge 점수(`judge_score`) 및 한 줄 이유(`judge_reason`)
+  - Judge 원문 리포트(`judge_report_raw`)
+- 이 파일은 엑셀이나 Python(pandas)에서 쉽게 로드할 수 있어,  
+  논문·보고서의 **실험 결과 표/그래프**를 구성하는 데이터로 바로 활용 가능합니다.
+
+#### 8.7 RAG 기반 법규 검색(RAG Agent1) 정량 평가
+
+법규 RAG 에이전트(LawRAGAgent, Agent1)는 별도의 **QA 벤치마크 세트**를 통해 정량 평가했습니다.
+
+- **데이터 구축**
+  - 건설 안전 규정 PDF로부터 도메인 전문가 검수를 거친 **질문–정답 쌍 약 520개**를 구축.
+  - 각 질문에 대해 “올바른 법규 스니펫/조항”을 정답으로 태깅하고,  
+    해당 텍스트를 FAISS 기반 임베딩 인덱스(`data/faiss/`)에 저장.
+- **평가 방법**
+  - 각 질문을 RAG 검색 쿼리로 사용하고, 상위 k개 스니펫을 반환하도록 LawRAGAgent 를 실행.
+  - 반환된 순위 리스트를 정답 라벨과 비교하여, 다음 IR 지표를 계산:
+    - **Precision@k**: 상위 k개 결과 중 정답에 해당하는 스니펫 비율.
+    - **Recall@k**: 전체 정답 스니펫 중 상위 k개 안에 포함된 비율.
+    - **MRR (Mean Reciprocal Rank)**: 첫 번째 정답 스니펫의 순위에 대한 역수의 평균.
+    - **nDCG@k (normalized Discounted Cumulative Gain)**: 순위에 따른 가중치를 고려한 정규화된 이득.
+    - **Hit@1 (Top‑1 Hit Rate)**: 가장 첫 번째 결과(Top‑1)가 정답 스니펫을 포함하는 비율.
+- **활용**
+  - 위 지표를 통해 인덱스 품질(임베딩/전처리)과 검색 전략(k 값, 스코어 커트라인 등)을 반복적으로 조정했습니다.
+  - README 의 본 섹션과 평가 방법 설명을 그대로 GPT에 입력하면,  
+    “RAG 기반 법규 검색 모듈의 정량 평가 방식”을 논문 형식으로 손쉽게 서술할 수 있습니다.
+
+---
+
+### 9. 사용 기술 스택 (Tech Stack)
+
+#### 9.1 Backend
 
 - **언어/프레임워크**
   - Python 3.10
@@ -324,12 +459,12 @@ PC와 모바일이 같은 Wi‑Fi 에 있고, 윈도우 방화벽에서 8000 포
   - `requests` (외부 API 호출)
   - `pytest` (테스트)
 
-#### 8.2 LLM / Prompting
+#### 9.2 LLM / Prompting
 
 - OpenAI API (예: `gpt-4o-mini`, `gpt-3.5-turbo`, `gpt-4` 등)
 - 에이전트별 시스템/쿼리 프롬프트 파일 (`prompts/*.txt`)을 통해 역할과 출력을 **프롬프트 드리븐** 방식으로 제어
 
-#### 8.3 Frontend (Flutter)
+#### 9.3 Frontend (Flutter)
 
 - Flutter (Material 3 기반 UI)
 - Dart
@@ -341,7 +476,7 @@ PC와 모바일이 같은 Wi‑Fi 에 있고, 윈도우 방화벽에서 8000 포
   - `lib/main.dart` : 일정 분석 + WBS 입력 + 결과 카드/테이블 스트리밍 렌더링
   - `lib/main2.dart` : 법규 Q&A 전용 화면, 법규 요약 카드 + 참고 문서 리스트 렌더링
 
-#### 8.4 데이터 / 파일 포맷
+#### 9.4 데이터 / 파일 포맷
 
 - 법규 RAG 인덱스: FAISS (`index.faiss`) + 메타데이터 (`meta.jsonl`)
 - 규칙 저장: JSON Lines (`data/rules/rules.jsonl`)
