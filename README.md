@@ -133,7 +133,11 @@ AI-CPM-project/
 ├── requirements.txt           # Python 의존성 목록
 └── README.md
 ```
+## 📱 Preview
 
+| Welcome Screen | CPM+WBS Screen | Regulation Screen | 
+|----------------|----------------|----------------|
+|<img width="700" height="1600" alt="image" src="https://github.com/user-attachments/assets/f3e7d3ae-129c-48ec-872d-25f8d485f0ee" />|<img width="700" height="1600" alt="image" src="https://github.com/user-attachments/assets/dff13e85-ac44-4e10-8e4b-fb3573f69c39" />|<img width="700" height="1600" alt="image" src="https://github.com/user-attachments/assets/be5d4e1c-f732-476f-ada3-bd706f042710" />|
 ---
 
 ### 5. Backend 실행 방법
