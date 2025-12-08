@@ -346,10 +346,10 @@ Judge 프롬프트에는 사람이 정의한 일정/지연 규칙이 자연어�
   - `start_date` 기준으로 `project_duration` 일 동안 진행.
 
 - **공휴일/주말 지연 (`holiday_delays`)**
-  - 전체 공사 기간(start_date ~ start_date + project_duration − 1)을 달력으로 펼쳐,  
-    토요일·일요일·법정 공휴일을 비근무일로 봅니다.
-  - `holiday_delays = 비근무일(주말+공휴일) 개수 − 법정 공휴일 개수`  
-    → 실질적으로 “주말 개수”에 해당.
+  - 전체 공사 기간(start_date ~ end_date)을 달력으로 펼쳐,  
+    토요일·일요일·법정 공휴일을 **비근무일(주말+공휴일)** 로 봅니다.
+  - 어떤 종료일 `end_date` 를 가정했을 때, 그 구간에 포함된 비근무일(주말+공휴일) 개수를  
+    `holiday_delays(end_date)` 로 정의합니다.
 
 - **날씨 지연 (`weather_delays`, 위험 기반 해석)**
   - `weather_forecast["days"]` 중 `construction_suitable == False` 인 날을 기상 불량일로 정의.
@@ -360,8 +360,28 @@ Judge 프롬프트에는 사람이 정의한 일정/지연 규칙이 자연어�
   - 수식: `weather_delays = 기상 불량일 개수 = |bad_weather_dates|`.
 
 - **최종 지연 및 공기**
-  - `total_delay_days = holiday_delays + weather_delays`
-  - `new_project_duration = project_duration + total_delay_days`
+  - `weather_overlap_nonworking(end_date) = 기상 불량일 ∩ 비근무일(주말+공휴일) 날짜 수`
+  - 어떤 종료일 `end_date` 를 가정하면,
+    \[
+      total\_delay\_days(end\_date)
+      = holiday\_delays(end\_date)
+      + weather\_delays
+      - weather\_overlap\_nonworking(end\_date)
+    \]
+  - 이 값으로부터
+    \[
+      new\_project\_duration(end\_date)
+      = project\_duration + total\_delay\_days(end\_date)
+    \]
+    를 정의하고,  
+    self-consistent 조건
+    \[
+      end^\* = start\_date + new\_project\_duration(end^\*) - 1
+    \]
+    을 만족하는 종료일 \(end^\*\) 을 반복(while-loop)으로 찾습니다.
+  - 최종적으로  
+    `total_delay_days = total_delay_days(end*)`,  
+    `new_project_duration = project_duration + total_delay_days` 로 사용합니다.
 
 이 규칙은 `backend/scripts/run_llm_judge_example.py` 의 `build_business_rules()` 에 정의되어 있으며,  
 그대로 Judge 시스템 프롬프트에 삽입됩니다.
