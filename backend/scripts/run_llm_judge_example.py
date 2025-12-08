@@ -23,19 +23,25 @@ def build_business_rules() -> str:
     return (
         "- 프로젝트 기간: 시작일 start_date 기준으로 project_duration일 동안 진행한다.\n"
         "- 공휴일/주말 지연 (holiday_delays):\n"
-        "  - 전체 공사 기간(start_date ~ start_date + project_duration - 1) 캘린더를 기준으로,\n"
-        "    토/일 + 법정 공휴일을 비근무일로 본다.\n"
-        "  - holiday_delays = 비근무일(주말+공휴일) 개수 - 법정 공휴일 개수로 정의하며,\n"
-        "    이는 사실상 주말 개수에 해당한다.\n"
+        "  - 전체 공사 기간(start_date ~ end_date) 캘린더를 기준으로,\n"
+        "    토/일 + 법정 공휴일을 비근무일(주말+공휴일)로 본다.\n"
+        "  - 어떤 종료일 end_date 를 가정했을 때, 그 구간의 비근무일(주말+공휴일) 개수를\n"
+        "    holiday_delays 라고 정의한다.\n"
         "- 날씨 지연 (weather_delays, 위험 기반 해석):\n"
         "  - weather_forecast['days'] 중 construction_suitable == False 인 날짜를 기상 불량일로 본다.\n"
         "  - 기상 불량일은 그날 작업 여부와 상관 없이, 장비 점검·자재 이동·후속 공정 순서 등에\n"
         "    간접적인 영향을 주어 전체 일정 여유(buffer)를 줄이는 '위험일'로 간주한다.\n"
         "  - 따라서 주말/공휴일(비근무일)에 발생한 기상 불량도 weather_delays에 포함한다.\n"
         "  - weather_delays = 기상 불량일 개수 (bad_weather_dates의 크기).\n"
-        "- 최종 지연:\n"
-        "  - total_delay_days = holiday_delays + weather_delays\n"
-        "  - new_project_duration = project_duration + total_delay_days\n"
+        "- 최종 지연(중복 조정 + self-consistent 모델):\n"
+        "  - weather_overlap_nonworking = '기상 불량일' ∩ '비근무일(주말+공휴일)'의 날짜 수.\n"
+        "  - 어떤 end_date 를 가정하면,\n"
+        "      total_delay_days(end_date) = holiday_delays(end_date) + weather_delays − weather_overlap_nonworking(end_date)\n"
+        "      new_project_duration(end_date) = project_duration + total_delay_days(end_date)\n"
+        "  - self-consistent 한 종료일 end* 는 다음 조건을 만족하도록 반복(while-loop)으로 찾는다.\n"
+        "      end* = start_date + new_project_duration(end*) − 1\n"
+        "  - 최종적으로, total_delay_days = total_delay_days(end*) 이며\n"
+        "    new_project_duration = project_duration + total_delay_days 로 정의한다.\n"
     )
 
 
@@ -209,41 +215,67 @@ def main() -> None:
     # 관심 있는 코드 부분만 문자열로 발췌해서 붙여 넣는다.
     # 필요하면 실제 파일에서 복사해서 이 문자열을 갱신해 주면 된다.
     code_snippet = """
-        # cpm_weather_cost.CPMWeatherCostAgent.calculate_weather_and_holiday_impact 중 일부
+        # cpm_weather_cost.CPMWeatherCostAgent._simulate_delays 중 일부
         weather_impact = self.weather_service.get_construction_impact(weather_forecast)
 
         calendar_policy = "5d"
         full_project_end = start_date + timedelta(days=project_duration - 1) if project_duration > 0 else start_date
         holiday_impact = self.holiday_service.get_holiday_impact(start_date, full_project_end, calendar_policy)
 
+        # 1) 기상 불량일 집합 (예보 창에 한정)
         bad_weather_dates = {
             date.fromisoformat(day["date"])
             for day in weather_forecast["days"]
             if not day["construction_suitable"]
         }
 
-        holidays_set = {
-            date.fromisoformat(d)
-            for d in holiday_impact.get("holidays", [])
-        }
-        non_working_dates = set()
-        current = start_date
-        while current <= full_project_end:
-            is_weekend = current.weekday() >= 5
-            is_holiday = current in holidays_set
-            if is_weekend or is_holiday:
-                non_working_dates.add(current)
-            current += timedelta(days=1)
+        # 2) 반복/수렴형 종료일 계산
+        calendar_policy = "5d"
+        if project_duration > 0:
+            end_date = start_date + timedelta(days=project_duration - 1)
+        else:
+            end_date = start_date
 
-        weather_only_dates = {d for d in bad_weather_dates if d not in non_working_dates}
-        weather_delays = len(weather_only_dates)
+        max_iterations = 10
         weather_total_bad_days = len(bad_weather_dates)
-        weather_overlap_nonworking = len(bad_weather_dates & non_working_dates)
+        weather_overlap_nonworking = 0
+        weather_delays = weather_total_bad_days
+        holiday_delays = 0
+        total_delays = 0
 
-        holiday_delays = holiday_impact["non_working_days"] - holiday_impact["holiday_count"]
+        for _ in range(max_iterations):
+            full_project_end = end_date
 
-        total_delays = weather_delays + holiday_delays
-        new_project_duration = project_duration + total_delays
+            # (1) 공휴일/주말 영향
+            holiday_impact = self.holiday_service.get_holiday_impact(start_date, full_project_end, calendar_policy)
+
+            # (2) 비근무일(주말+공휴일) 집합
+            holidays_set = {
+                date.fromisoformat(d)
+                for d in holiday_impact.get("holidays", [])
+            }
+            non_working_dates = set()
+            current = start_date
+            while current <= full_project_end:
+                is_weekend = current.weekday() >= 5  # 토(5), 일(6)
+                is_holiday = current in holidays_set
+                if is_weekend or is_holiday:
+                    non_working_dates.add(current)
+                current += timedelta(days=1)
+
+            # (3) 요약 지표
+            weather_total_bad_days = len(bad_weather_dates)
+            weather_overlap_nonworking = len(bad_weather_dates & non_working_dates)
+            weather_delays = weather_total_bad_days
+            holiday_delays = holiday_impact["non_working_days"]
+
+            total_delays = holiday_delays + weather_delays - weather_overlap_nonworking
+            new_project_duration = project_duration + total_delays
+            new_end_date = start_date + timedelta(days=new_project_duration - 1) if new_project_duration > 0 else start_date
+
+            if new_end_date == end_date:
+                break
+            end_date = new_end_date
     """
 
     judge_report = run_cpm_llm_judge(
